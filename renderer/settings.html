@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:" />
+  <title>Настройки</title>
+  <link rel="stylesheet" href="fonts.css" />
+  <link rel="stylesheet" href="app.css" />
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body data-theme="light">
+  <header id="settingsTitlebar">
+    <span class="titlebarTitle">Настройки</span>
+    <div class="toolbarSpacer"></div>
+    <div id="windowControls">
+      <button class="winBtn" id="setWinMin" title="Свернуть" aria-label="Свернуть"><svg class="icon"><use href="#i-minus" /></svg></button>
+      <button class="winBtn isClose" id="setWinClose" title="Закрыть" aria-label="Закрыть"><svg class="icon"><use href="#i-x" /></svg></button>
+    </div>
+  </header>
+
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></symbol>
+  </svg>
+
+  <div id="settingsShell">
+    <nav id="settingsNav" aria-label="Разделы настроек">
+      <button class="navItem isActive" data-pane="general">Общие</button>
+      <button class="navItem" data-pane="model">Модель</button>
+      <button class="navItem" data-pane="agent">Агент</button>
+      <button class="navItem" data-pane="tools">Инструменты</button>
+      <button class="navItem" data-pane="appearance">Оформление</button>
+      <button class="navItem" data-pane="skills">Скиллы</button>
+    </nav>
+
+    <div id="settingsPanes">
+      <section class="settingsPane isActive" data-pane="general">
+        <h2>Общие</h2>
+        <label class="switchRow">
+          <input type="checkbox" id="continueLast" />
+          <span class="switchText">Продолжать последний диалог при запуске<small>Выключено: каждый запуск начинается с нового диалога.</small></span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="sendOnEnter" />
+          <span class="switchText">Отправка по Enter<small>Выключено: Enter — новая строка, ⌘/Ctrl+Enter — отправка.</small></span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="autoScroll" />
+          <span class="switchText">Прокручивать к новому тексту<small>Выключено: лента остаётся на месте во время ответа.</small></span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="showUsage" />
+          <span class="switchText">Показывать токены и стоимость<small>Строка под ответом и процент контекста в тулбаре.</small></span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="osNotifications" />
+          <span class="switchText">Уведомления системы<small>Показывать уведомление, когда окно не в фокусе.</small></span>
+        </label>
+      </section>
+
+      <section class="settingsPane" data-pane="model">
+        <h2>Модель</h2>
+        <div class="field">
+          <label for="apiKey">Ключ OpenRouter</label>
+          <div class="row">
+            <input class="textInput" id="apiKey" type="password" spellcheck="false" placeholder="sk-or-v1-…" />
+            <button class="ghostBtn" id="checkKey">Проверить</button>
+          </div>
+          <span class="fieldHint" id="keyStatus">Сохраняется автоматически. Хранится в ~/.granka/granka.json (0600).</span>
+        </div>
+        <div class="field">
+          <label for="modelFilter">Поиск модели</label>
+          <input class="textInput" id="modelFilter" spellcheck="false" placeholder="например, claude" />
+        </div>
+        <div class="modelList" id="modelRows" role="listbox" aria-label="Список моделей"></div>
+        <div class="row rowSpaced">
+          <button class="ghostBtn" id="starBtn">В избранное</button>
+          <span class="fieldHint" id="modelMeta"></span>
+        </div>
+      </section>
+
+      <section class="settingsPane" data-pane="agent">
+        <h2>Агент</h2>
+        <div class="field">
+          <label for="cwd">Рабочая папка</label>
+          <div class="row">
+            <input class="textInput" id="cwd" spellcheck="false" placeholder="~/.granka" />
+            <button class="ghostBtn" id="pickDir">Выбрать…</button>
+          </div>
+          <span class="fieldHint">Сессии группируются по папке; смена папки начинает новый контекст.</span>
+        </div>
+        <div class="field">
+          <span>Системный промпт</span>
+          <span class="fieldHint">~/.granka/SYSTEM.md управляется приложением и не редактируется из интерфейса. Свои правила — на вкладке «Проект».</span>
+        </div>
+        <label class="switchRow">
+          <input type="checkbox" id="compactionEnabled" />
+          <span class="switchText">Автоматическое сжатие контекста<small>Когда контекст близок к пределу, старая часть диалога сворачивается в резюме.</small></span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="cacheRetentionLong" />
+          <span class="switchText">Долгий кэш промпта<small>Стабильный префикс запроса кэшируется провайдером: входные токены дешевле.</small></span>
+        </label>
+        <div class="field">
+          <label for="toolOutputLimit">Лимит вывода инструментов, символов</label>
+          <input class="textInput" id="toolOutputLimit" type="number" min="500" step="500" />
+          <span class="fieldHint">Всё, что длиннее, обрезается — это самый дешёвый способ не жечь входные токены.</span>
+        </div>
+        <div class="field">
+          <label for="compactionReserve">Резерв контекста, токенов</label>
+          <input class="textInput" id="compactionReserve" type="number" min="1000" step="1024" />
+          <span class="fieldHint">Сколько токенов оставлять свободными до сжатия (по умолчанию 16384).</span>
+        </div>
+      </section>
+
+      <section class="settingsPane" data-pane="tools">
+        <h2>Инструменты агента</h2>
+        <label class="switchRow">
+          <input type="checkbox" id="toolTodo" />
+          <span class="switchText">План задач (todo_write)<small>Агент ведёт чек-лист хода, он виден в ленте.</small></span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="toolAsk" />
+          <span class="switchText">Вопросы пользователю (ask_user)<small>Структурированный вопрос с вариантами, агент ждёт ответа.</small></span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="toolWeb" />
+          <span class="switchText">Веб-поиск и чтение страниц<small>web_search и web_fetch: Википедия, GitHub, Hacker News, DuckDuckGo. Без ключей и аккаунтов.</small></span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="toolSubagents" />
+          <span class="switchText">Подагенты (task)<small>Узкая подзадача уходит отдельному агенту со своим контекстом.</small></span>
+        </label>
+        <div class="field">
+          <label for="searxUrl">Свой SearXNG (необязательно)</label>
+          <input class="textInput" id="searxUrl" spellcheck="false" placeholder="https://searx.example.org" />
+          <span class="fieldHint">Если у вас есть свой инстанс — поиск пойдёт через него. Публичные инстансы обычно закрыты антиботом.</span>
+        </div>
+        <div class="field">
+          <span>Доступные подагенты</span>
+          <div id="subagentList" class="subagentList"></div>
+          <span class="fieldHint">Агент выбирает роль сам: explore — код, research — внешние факты, review — дефекты, plan — план, general — разбор.</span>
+        </div>
+        <label class="switchRow">
+          <input type="checkbox" id="debugTools" />
+          <span class="switchText">Показывать отчёты подагентов<small>Служебная отметка в ленте при завершении task.</small></span>
+        </label>
+      </section>
+
+      <section class="settingsPane" data-pane="appearance">
+        <h2>Оформление</h2>
+        <div class="field">
+          <span>Тема</span>
+          <div id="themeSelect"></div>
+          <span class="fieldHint">У каждой темы свой акцентный цвет. «Как в системе» переключает светлую и тёмную пару Granka.</span>
+        </div>
+        <div class="field">
+          <span>Размер текста в диалоге</span>
+          <div id="fontSizeSelect"></div>
+        </div>
+        <div class="field">
+          <span>Шрифт интерфейса</span>
+          <div id="uiFontSelect"></div>
+        </div>
+        <div class="field">
+          <span>Шрифт кода</span>
+          <div id="codeFontSelect"></div>
+        </div>
+        <div class="field">
+          <span>Плотность интерфейса</span>
+          <div id="densitySelect"></div>
+          <span class="fieldHint">Компактная уменьшает отступы и высоту строк — на экран влезает больше.</span>
+        </div>
+        <label class="switchRow">
+          <input type="checkbox" id="accentSystem" />
+          <span class="switchText">Акцентный цвет из системы<small>Выключено: каждая тема использует свой акцент.</small></span>
+        </label>
+      </section>
+
+      <section class="settingsPane" data-pane="skills">
+        <h2>Скиллы</h2>
+        <div class="skillsToolbar">
+          <button class="ghostBtn" id="installSkills">Установить встроенные</button>
+          <span class="fieldHint" id="skillsMeta"></span>
+        </div>
+        <div id="skillsList" class="skillsList"></div>
+        <span class="fieldHint">Скиллы лежат в ~/.granka/skills. Модель видит их название и описание; тело читается, когда задача совпала.</span>
+      </section>
+
+    </div>
+  </div>
+
+  <footer id="settingsFooter">
+    <button class="ghostBtn" id="save">Сохранить</button>
+    <span class="settingsStatus" id="status" role="status"></span>
+  </footer>
+
+  <script src="themes.js"></script>
+  <script src="select.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

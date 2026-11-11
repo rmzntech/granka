@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:" />
+  <title>granka</title>
+  <link rel="stylesheet" href="fonts.css" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body data-theme="system">
+
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="m12 5 7 7-7 7" /></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7" /> <path d="M12 19V5" /></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" /></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" /></symbol>
+    <symbol id="i-settings-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 17H5" /> <path d="M19 7h-9" /> <circle cx="17" cy="17" r="3" /> <circle cx="7" cy="7" r="3" /></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /></symbol>
+    <symbol id="i-maximize-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6" /> <path d="m21 3-7 7" /> <path d="m3 21 7-7" /> <path d="M9 21H3v-6" /></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /> <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></symbol>
+    <symbol id="i-trash-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6" /> <path d="M14 11v6" /> <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /> <path d="M3 6h18" /> <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /> <path d="m15 5 4 4" /></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1" /> <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" /> <path d="M10 12h4" /></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></symbol>
+    <symbol id="i-panel-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M9 3v18" /></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.3a.53.53 0 0 1 .95 0l2.31 4.68a2.12 2.12 0 0 0 1.6 1.16l5.16.76a.53.53 0 0 1 .3.9l-3.74 3.64a2.12 2.12 0 0 0-.61 1.88l.88 5.14a.53.53 0 0 1-.77.56l-4.62-2.43a2.12 2.12 0 0 0-1.97 0L6.4 21a.53.53 0 0 1-.77-.56l.88-5.14a2.12 2.12 0 0 0-.61-1.88L2.16 9.8a.53.53 0 0 1 .29-.9l5.17-.76a2.12 2.12 0 0 0 1.6-1.16z" /></symbol>
+    <symbol id="i-minimize-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6" /> <path d="m21 3-7 7" /> <path d="m3 21 7-7" /> <path d="M9 21H3v-6" /></symbol>
+    <symbol id="i-circle-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" /></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16" /> <path d="M18 17V9" /> <path d="M13 17V5" /> <path d="M8 17v-3" /></symbol>
+    <symbol id="i-paperclip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551" /></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19h8" /> <path d="m4 17 6-6-6-6" /></symbol>
+    <symbol id="i-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /> <path d="M14 2v5a1 1 0 0 0 1 1h5" /> <path d="M10 9H8" /> <path d="M16 13H8" /> <path d="M16 17H8" /></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /> <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /> <path d="M2 12h20" /></symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8" /> <rect width="16" height="12" x="4" y="8" rx="2" /> <path d="M2 14h2" /> <path d="M20 14h2" /> <path d="M15 13v2" /> <path d="M9 13v2" /></symbol>
+    <symbol id="i-list-todo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 5h8" /> <path d="M13 12h8" /> <path d="M13 19h8" /> <path d="m3 17 2 2 4-4" /> <rect x="3" y="4" width="6" height="6" rx="1" /></symbol>
+    <symbol id="i-loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></symbol>
+    <symbol id="i-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /></symbol>
+    <symbol id="i-help-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /> <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /> <path d="M12 17h.01" /></symbol>
+    <symbol id="i-ellipsis" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></symbol>
+    <symbol id="i-quote" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17 6H3" /><path d="M21 12H8" /><path d="M21 18H8" /><path d="M3 12v6" /></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" /><path d="m6.08 11.5-3.48 1.58a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.84L18 11.5" /></symbol>
+  </svg>
+
+  <header id="toolbar">
+    <button class="iconBtn" id="sidebarToggle" title="Боковая панель (⌘B)" aria-label="Боковая панель">
+      <svg class="icon"><use href="#i-panel-left" /></svg>
+    </button>
+    <div class="segmented" role="tablist" aria-label="Разделы">
+      <button class="segment isActive" id="segmentChat" role="tab" aria-selected="true">Диалог</button>
+      <button class="segment" id="segmentProject" role="tab" aria-selected="false">Проект</button>
+      <button class="segment" id="segmentMemory" role="tab" aria-selected="false">Правила</button>
+    </div>
+
+    <button class="iconBtn" id="newChat" title="Новый диалог (⌘N)" aria-label="Новый диалог">
+      <svg class="icon"><use href="#i-plus" /></svg>
+    </button>
+
+    <span class="titlebarTitle" id="titleText">granka</span>
+    <span class="titlebarMeta" id="titlebarMeta"></span>
+
+    <div class="toolbarSpacer"></div>
+
+    <button class="popupBtn" id="modelPopup" title="Модель">
+      <span id="modelName">модель</span>
+      <svg class="icon chevron"><use href="#i-chevron-down" /></svg>
+    </button>
+
+    <button class="popupBtn" id="thinkingPopup" title="Уровень мышления">
+      <span id="thinkingName">off</span>
+      <svg class="icon chevron"><use href="#i-chevron-down" /></svg>
+    </button>
+
+    <span class="meter" id="ctx" title="Заполнение контекста"></span>
+
+    <button class="iconBtn" id="runBtn" title="Агент работает" aria-label="Агент работает" hidden>
+      <span class="runDot" aria-hidden="true"></span>
+    </button>
+
+    <button class="iconBtn" id="menuBtn" title="Ещё" aria-label="Ещё" aria-haspopup="menu">
+      <svg class="icon"><use href="#i-ellipsis" /></svg>
+    </button>
+
+    <div id="windowControls">
+      <button class="winBtn" id="winMin" title="Свернуть" aria-label="Свернуть"><svg class="icon"><use href="#i-minus" /></svg></button>
+      <button class="winBtn" id="winMax" title="Развернуть" aria-label="Развернуть"><svg class="icon"><use href="#i-minimize-2" /></svg></button>
+      <button class="winBtn isClose" id="winClose" title="Закрыть" aria-label="Закрыть"><svg class="icon"><use href="#i-x" /></svg></button>
+    </div>
+  </header>
+
+  <div id="shell">
+    <aside id="sidebar" aria-label="Боковая панель">
+      <button class="sidebarPopup" id="projectPopup" aria-haspopup="menu">
+        <svg class="icon"><use href="#i-folder" /></svg>
+        <span id="projectName">Проект</span>
+        <svg class="icon chevron"><use href="#i-chevron-down" /></svg>
+      </button>
+
+      <label class="searchField">
+        <svg class="icon"><use href="#i-search" /></svg>
+        <input id="sessionSearch" placeholder="Поиск по истории" spellcheck="false" aria-label="Поиск по истории" />
+      </label>
+
+      <button class="sidebarRow" id="allSessions">
+        <svg class="icon"><use href="#i-layers" /></svg>
+        <span>Все сессии</span>
+        <span class="rowCount" id="sessionCount"></span>
+      </button>
+
+      <div id="sessionList" role="listbox" aria-label="Диалоги" tabindex="0"></div>
+    </aside>
+
+    <main id="content">
+      <section id="chatView">
+        <div id="logWrap">
+          <div id="log" role="log"></div>
+          <button class="iconBtn floating" id="scrollDown" title="К концу" aria-label="К концу" hidden>
+            <svg class="icon"><use href="#i-chevron-down" /></svg>
+          </button>
+        </div>
+
+        <div id="composer">
+          <div id="suggest" hidden role="listbox" aria-label="Команды"></div>
+          <div id="toasts" aria-live="polite"></div>
+          <div id="planStrip" class="planStrip" hidden>
+            <div class="planStripHead">
+              <svg class="icon"><use href="#i-list-todo" /></svg>
+              <span id="planStripCount" class="planStripCount"></span>
+              <button class="planStripToggle" id="planStripToggle" aria-expanded="false">развернуть</button>
+              <button class="planStripClear" id="planStripClear" title="Очистить план" aria-label="Очистить план">
+                <svg class="icon"><use href="#i-x" /></svg>
+              </button>
+            </div>
+            <div class="planStripItems" id="planStripItems"></div>
+          </div>
+          <div id="attachments" hidden></div>
+          <div class="composerBox">
+            <button class="iconBtn attachBtn" id="attachBtn" title="Добавить файл" aria-label="Добавить файл">
+              <svg class="icon"><use href="#i-paperclip" /></svg>
+            </button>
+            <textarea id="prompt" rows="1" placeholder="Спросите что-нибудь…  ⏎ — отправить, / — команды" aria-label="Сообщение"></textarea>
+            <div class="composerActions">
+              <span id="status" class="statusText"></span>
+              <button class="iconBtn" id="stop" title="Остановить (Esc)" aria-label="Остановить" hidden>
+                <svg class="icon"><use href="#i-square" /></svg>
+              </button>
+              <button class="prominentBtn" id="send" title="Отправить (Enter)" aria-label="Отправить">
+                <svg class="icon"><use href="#i-arrow-up" /></svg>
+              </button>
+            </div>
+          </div>
+          <div class="composerHint" id="composerHint" hidden>
+            Enter — отправить · Shift+Enter — новая строка · «/» — команды
+          </div>
+        </div>
+      </section>
+
+      <section id="memoryView" hidden>
+        <header id="memoryHeader">
+          <div class="titleBlock">
+            <h1>Правила</h1>
+            <span class="workspaceMeta">AGENTS.md — действует во всех проектах</span>
+          </div>
+        </header>
+        <div class="pane" id="memoryPane"></div>
+      </section>
+
+      <section id="projectView" hidden>
+        <header id="projectHeader">
+          <div class="titleBlock">
+            <h1>Проект</h1>
+            <span class="workspaceMeta">папка, проектный AGENTS.md и профиль модели — только для этого проекта</span>
+          </div>
+          <button class="iconBtn" id="deleteProjectTop" title="Удалить проект" aria-label="Удалить проект">
+            <svg class="icon"><use href="#i-trash-2" /></svg>
+          </button>
+        </header>
+        <div class="pane" id="projectPane"></div>
+      </section>
+
+      <section id="statsView" hidden>
+        <header id="statsHeader">
+          <div class="titleBlock">
+            <h1>Аналитика</h1>
+            <span class="workspaceMeta" id="statsMeta"></span>
+          </div>
+          <button class="iconBtn" id="closeStats" title="Назад к диалогу" aria-label="Назад к диалогу">
+            <svg class="icon"><use href="#i-x" /></svg>
+          </button>
+        </header>
+        <div class="pane" id="statsPane"></div>
+      </section>
+
+      <section id="sessionsView" hidden>
+        <header id="sessionsHeader">
+          <div class="titleBlock">
+            <h1>Все сессии</h1>
+            <span class="workspaceMeta" id="sessionsMeta"></span>
+          </div>
+          <button class="iconBtn" id="closeSessions" title="Назад к диалогу" aria-label="Назад к диалогу">
+            <svg class="icon"><use href="#i-x" /></svg>
+          </button>
+        </header>
+        <div class="pane" id="sessionsPane"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="onboarding" hidden>
+    <div class="onboardingDialog" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle">
+      <div class="onboardingStep" id="onboardingStep1">
+        <h2 id="onboardingTitle">Добро пожаловать в granka</h2>
+        <p class="onboardingText">Нужен ключ OpenRouter — он хранится только на этом компьютере.</p>
+        <input class="textInput" id="onboardingKey" type="password" placeholder="sk-or-v1-…" aria-label="Ключ OpenRouter" />
+        <div class="onboardingActions">
+          <span class="onboardingStatus" id="onboardingStatus"></span>
+          <button class="ghostBtn" id="onboardingCheck">Проверить</button>
+          <button class="prominentBtn onboardingNext" id="onboardingNext1" title="Далее" aria-label="Далее">
+            <svg class="icon"><use href="#i-arrow-right" /></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="onboardingStep" id="onboardingStep2" hidden>
+        <h2>Рабочая папка</h2>
+        <p class="onboardingText">Агент работает с файлами в этой папке. Можно изменить позже.</p>
+        <div class="row">
+          <input class="textInput" id="onboardingCwd" spellcheck="false" placeholder="~/.granka" aria-label="Рабочая папка" />
+          <button class="ghostBtn" id="onboardingPick">Выбрать…</button>
+        </div>
+        <div class="onboardingActions">
+          <button class="ghostBtn" id="onboardingBack2">Назад</button>
+          <button class="prominentBtn onboardingNext" id="onboardingNext2" title="Далее" aria-label="Далее">
+            <svg class="icon"><use href="#i-arrow-right" /></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="onboardingStep" id="onboardingStep3" hidden>
+        <h2>Первый вопрос</h2>
+        <p class="onboardingText">Например: «объясни, что делает этот репозиторий».</p>
+        <textarea class="panelTextarea" id="onboardingPrompt" placeholder="Что спросить у агента?"></textarea>
+        <div class="onboardingActions">
+          <button class="ghostBtn" id="onboardingBack3">Назад</button>
+          <button class="ghostBtn" id="onboardingSkip">Пропустить</button>
+          <button class="ghostBtn" id="onboardingStart">Начать</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="questionModal" hidden>
+    <div class="questionDialog" role="dialog" aria-modal="true" aria-labelledby="questionTitle">
+      <div class="questionDialogHead">
+        <span id="questionHeader" class="questionHeader"></span>
+        <span id="questionTitle" class="questionText"></span>
+      </div>
+      <div class="questionOptions" id="questionOptions"></div>
+      <div class="questionFreeform" id="questionFreeform">
+        <input class="textInput" id="questionInput" placeholder="Свой ответ…" aria-label="Свой ответ" />
+        <button class="ghostBtn" id="questionSubmit">Ответить</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="popover" hidden role="menu"></div>
+  <div id="announcer" class="srOnly" aria-live="polite"></div>
+
+  <script src="themes.js"></script>
+  <script src="select.js"></script>
+  <script src="markdown.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

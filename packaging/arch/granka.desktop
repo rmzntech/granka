@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=granka
+GenericName=AI coding agent
+Comment=Desktop client for the Pi coding agent
+Exec=granka %U
+Icon=granka
+Terminal=false
+Categories=Development;
+Keywords=ai;agent;chat;code;
+StartupNotify=true
+StartupWMClass=granka

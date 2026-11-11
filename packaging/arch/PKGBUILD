@@ -1,0 +1,35 @@
+# Maintainer: granka
+pkgname=granka
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="Desktop client for the Pi coding agent"
+arch=('x86_64' 'aarch64')
+url="https://github.com/granka"
+license=('MIT')
+depends=('electron' 'nodejs')
+options=('!strip')
+install=granka.install
+source=("granka-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  # application files + production node_modules
+  install -d "$pkgdir/usr/lib/granka"
+  cp -r "$srcdir/granka-${pkgver}/." "$pkgdir/usr/lib/granka/"
+
+  # launcher
+  install -Dm755 "$srcdir/granka-${pkgver}/packaging/arch/granka.sh" "$pkgdir/usr/bin/granka"
+
+  # desktop entry and icons
+  install -Dm644 "$srcdir/granka-${pkgver}/packaging/arch/granka.desktop" \
+    "$pkgdir/usr/share/applications/granka.desktop"
+  for size in 256x256 512x512 1024x1024; do
+    install -Dm644 "$srcdir/granka-${pkgver}/build/icons/${size}.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}/apps/granka.png"
+  done
+
+  # license and docs
+  install -Dm644 "$srcdir/granka-${pkgver}/NOTICE.md" "$pkgdir/usr/share/licenses/granka/NOTICE.md"
+  [ -f "$srcdir/granka-${pkgver}/README.md" ] && \
+    install -Dm644 "$srcdir/granka-${pkgver}/README.md" "$pkgdir/usr/share/doc/granka/README.md"
+}

@@ -1,0 +1,14 @@
+post_install() {
+  update-desktop-database -q 2>/dev/null || true
+  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+  echo "granka установлен. Запуск: granka"
+  echo "Данные и настройки: ~/.granka"
+}
+
+post_upgrade() {
+  post_install
+}
+
+pre_remove() {
+  echo "Настройки в ~/.granka не удаляются — удалите вручную, если нужно."
+}

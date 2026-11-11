@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+*.log
+.build/
+packaging/arch/pkg/
+packaging/arch/src/
+packaging/arch/*.tar.gz
+*.AppImage
+*.deb
+.DS_Store
+*.pkg.tar.zst
