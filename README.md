@@ -41,7 +41,7 @@ Pi SDK в обычное приложение:
 ## Быстрый старт
 
 ```bash
-git clone git@github.com:rmzntech/granka.git
+git clone https://github.com/rmzntech/granka.git
 cd granka
 npm ci
 npm start
