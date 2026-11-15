@@ -521,6 +521,15 @@ export function createGrankaTools(host) {
         thinkingLevel: definition.thinking ?? "low",
       });
       const child = created.session; // createAgentSession returns { session, ... }
+      // Forward the child's tool activity to the parent chat: the task chip
+      // shows what the subagent is doing instead of a blind "работает…".
+      const unsub = child.subscribe?.((event) => {
+        if (event.type === "tool_execution_start") {
+          host.emit({ kind: "subtool", agent: definition.id, name: event.toolName, phase: "start" });
+        } else if (event.type === "tool_execution_end") {
+          host.emit({ kind: "subtool", agent: definition.id, name: event.toolName, phase: "end", isError: Boolean(event.isError) });
+        }
+      });
       const abort = () => child.abort().catch(() => {});
       signal?.addEventListener?.("abort", abort);
       try {
@@ -549,6 +558,7 @@ export function createGrankaTools(host) {
         };
       } finally {
         signal?.removeEventListener?.("abort", abort);
+        try { unsub?.(); } catch {}
         child.dispose();
       }
     },

@@ -1301,7 +1301,7 @@ select.textInput:not([size]) {
   padding: 8px;
   resize: vertical;
   border-radius: var(--radius-sm);
-  font: 12px / 1.55 var(--mono);
+  font: var(--fs-md) / 1.55 var(--mono);
 }
 
 .row {
@@ -2230,7 +2230,17 @@ mark {
 
 .toolTime {
   color: var(--text-2);
-  opacity: 0.8;
+}
+
+/* error aggregate badge in block/group heads */
+.toolErrorBadge {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.toolBlockHead.hasError,
+.toolGroupHead.hasError {
+  border-color: var(--danger);
 }
 
 .tool.done {
@@ -2352,7 +2362,7 @@ mark {
   border: var(--hair) solid var(--separator);
   border-radius: var(--radius-sm);
   background: var(--fill);
-  font: 12px / 1.55 var(--mono);
+  font: var(--fs-md) / 1.55 var(--mono);
 }
 
 .toolDetailHead {
@@ -2494,10 +2504,10 @@ mark {
 }
 
 .thinkingHead .icon {
-  width: 11px;
-  height: 11px;
+  width: 13px;
+  height: 13px;
   flex: none;
-  transition: transform 0.15s ease;
+  transition: transform var(--dur) var(--ease);
 }
 
 .thinking:not(.isOpen) .thinkingHead .icon {
@@ -2505,13 +2515,13 @@ mark {
 }
 
 .thinkingTime {
-  opacity: 0.7;
+  color: var(--text-2);
 }
 
 .thinkingBody {
   margin: 0;
   padding: 0 12px 8px 12px;
-  font: 12px / 1.55 var(--mono);
+  font: var(--fs-md) / 1.55 var(--mono);
   font-style: italic;
   color: var(--text-2);
   white-space: pre-wrap;
@@ -2521,7 +2531,10 @@ mark {
 }
 
 .thinking:not(.isOpen) .thinkingBody {
-  display: none;
+  display: block;
+  max-height: 37px;
+  overflow: hidden;
+  padding-bottom: 0;
 }
 
 /* live activity status with animated ellipsis */
@@ -2892,6 +2905,20 @@ body[data-density="compact"] .sessionItem {
 
 body[data-density="compact"] .sessionMeta {
   font-size: var(--fs-xs);
+}
+
+body[data-density="compact"] .tool,
+body[data-density="compact"] .toolBlockHead,
+body[data-density="compact"] .toolGroupHead {
+  padding: 2px 7px;
+}
+
+body[data-density="compact"] .thinkingBody {
+  max-height: 220px;
+}
+
+body[data-density="compact"] .msg > .tool {
+  margin: 4px 4px;
 }
 
 /* ---------------- motion: fast, but smooth ---------------- */

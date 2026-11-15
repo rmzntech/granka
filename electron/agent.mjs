@@ -71,6 +71,9 @@ const DEFAULT_CONFIG = {
 let pi; // pi SDK, imported in init() after env isolation
 let runtime;
 let session;
+// Thinking duration per session id (in-memory: the SDK session file does
+// not store it, so it only survives while the session stays loaded).
+const thinkingMsBySession = new Map();
 let appliedKey;
 let sessionsById = new Map();
 let pending = { kind: "recent" }; // recent | new | open
@@ -1155,6 +1158,7 @@ export async function history() {
         text: textOf(message),
         ts: message.timestamp ?? null,
         thinking: "",
+        thinkingMs: 0,
         tools: [],
         usage: null,
       });
@@ -1171,7 +1175,7 @@ export async function history() {
     }
     if (message.role !== "assistant") continue;
     if (!current || current.role !== "assistant") {
-      current = { role: "assistant", text: "", ts: message.timestamp ?? null, thinking: "", tools: [], usage: null };
+      current = { role: "assistant", text: "", ts: message.timestamp ?? null, thinking: "", thinkingMs: 0, tools: [], usage: null };
     }
     const usage = usageOf(message);
     if (usage) {
@@ -1215,13 +1219,21 @@ export async function history() {
       } catch (err) { console.error("[granka plan restore]", err?.message ?? err); }
     }
   }
+  const messages = turns.filter((turn) => turn.role === "user" || turn.text.trim() || turn.tools.length || turn.thinking.trim());
+  // Attach the measured thinking duration to the last assistant turn.
+  const thinkingMs = thinkingMsBySession.get(s.sessionManager.getSessionId());
+  if (thinkingMs) {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === "assistant" && messages[i].thinking.trim()) { messages[i].thinkingMs = thinkingMs; break; }
+    }
+  }
   return {
     plan,
     sessionId: s.sessionManager.getSessionId(),
     cwd: s.sessionManager.getCwd(),
     projectId: projectOfSession(s.sessionManager.getSessionId()),
     context: contextOf(s),
-    messages: turns.filter((turn) => turn.role === "user" || turn.text.trim() || turn.tools.length || turn.thinking.trim()),
+    messages,
   };
 }
 
@@ -1688,13 +1700,20 @@ async function runAfterEditHook(toolName, session) {
 export async function ask(question, onDelta, onTool, onNotify = () => {}, attachments = [], onThinking = () => {}) {
   const s = await ensureSession();
   const checkpointState = { done: false };
+  let thinkingFirstAt = 0;
+  let thinkingLastAt = 0;
   const unsubscribe = s.subscribe((event) => {
     if (event.type === "message_update") {
       const kind = event.assistantMessageEvent.type;
       if (kind === "text_delta") onDelta(event.assistantMessageEvent.delta);
-      else if (kind === "thinking_delta") onThinking(event.assistantMessageEvent.delta);
+      else if (kind === "thinking_delta") {
+        const now = Date.now();
+        if (!thinkingFirstAt) thinkingFirstAt = now;
+        thinkingLastAt = now;
+        onThinking(event.assistantMessageEvent.delta);
+      }
     } else if (event.type === "tool_execution_start") {
-      onTool({ phase: "start", name: event.toolName, args: clip(event.args) });
+      onTool({ phase: "start", name: event.toolName, args: clip(event.args), toolCallId: event.toolCallId });
       maybeCheckpoint(event.toolName, s, checkpointState).then((id) => {
         if (id) onNotify({ kind: "checkpoint", id });
       }).catch((err) => console.error("[granka] checkpoint:", err?.message ?? err));
@@ -1705,6 +1724,7 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
         isError: event.isError,
         durationMs: event.durationMs,
         result: clip(event.result),
+        toolCallId: event.toolCallId,
       });
       runAfterEditHook(event.toolName, s).then((output) => {
         if (output) onNotify({ kind: "hook", output });
@@ -1750,7 +1770,9 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
     const fresh = s.messages.slice(startIndex);
     const usage = sumTurnUsage(fresh);
     recordUsage(s.sessionManager.getSessionId(), s.model?.id ?? loadConfig().model, usage);
-    return { ok: true, text: s.getLastAssistantText() ?? "", usage, context: contextOf(s) };
+    const thinkingMs = thinkingFirstAt && thinkingLastAt ? thinkingLastAt - thinkingFirstAt : 0;
+    if (thinkingMs) thinkingMsBySession.set(s.sessionManager.getSessionId(), thinkingMs);
+    return { ok: true, text: s.getLastAssistantText() ?? "", usage, context: contextOf(s), thinkingMs };
   } catch (err) {
     return { ok: false, error: String(err?.message ?? err) };
   } finally {

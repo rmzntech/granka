@@ -1026,7 +1026,7 @@ granka.onThinking((delta) => {
     thinkingBlock.setAttribute("aria-expanded", "true");
     const head = document.createElement("div");
     head.className = "thinkingHead";
-    head.append(svgIcon("chevron-down"));
+    head.append(svgIcon("brain"));
     const title = document.createElement("span");
     title.textContent = "мышление";
     head.append(title);
@@ -1119,14 +1119,14 @@ function toolFirstLine(args) {
   return (args ?? "").split("\n")[0].slice(0, 80);
 }
 
-function makeToolChip(name, args) {
+function makeToolChip(name, args, toolCallId) {
   const chip = document.createElement("div");
   chip.className = "tool isRunning";
   chip.tabIndex = 0;
   chip.dataset.name = name;
   chip.setAttribute("role", "button");
   chip.setAttribute("aria-expanded", "false");
-  chip.__detail = { name, args: args ?? "", result: "", durationMs: 0, isError: false };
+  chip.__detail = { name, args: args ?? "", result: "", durationMs: 0, isError: false, toolCallId: toolCallId ?? "", startedAt: Date.now() };
   const icon = svgIcon(TOOL_ICONS[name] ?? "square");
   icon.classList.add("toolIcon");
   chip.append(icon);
@@ -1143,9 +1143,12 @@ function makeToolChip(name, args) {
     general: "Общая задача",
   };
   let agentRole = "";
+  let agentTask = "";
   if (name === "task") {
     try {
-      agentRole = JSON.parse(args ?? "{}").agent ?? "";
+      const parsed = JSON.parse(args ?? "{}");
+      agentRole = parsed.agent ?? "";
+      agentTask = String(parsed.description ?? "").replace(/\s+/g, " ").trim();
     } catch {}
   }
   label.textContent = agentRole ? (SUBAGENT_NAMES[agentRole] ?? "подагент") : (TOOL_LABELS[name] ?? name);
@@ -1158,12 +1161,12 @@ function makeToolChip(name, args) {
     texts.append(status);
   }
   chip.append(texts);
-  const preview = toolPreview(name, args) || toolFirstLine(args);
-  if (preview && name !== "task") {
+  const preview = name === "task" ? (agentTask || toolFirstLine(args)) : (toolPreview(name, args) || toolFirstLine(args));
+  if (preview) {
     const previewEl = document.createElement("span");
     previewEl.className = "toolArgs";
     previewEl.textContent = preview;
-    previewEl.title = pickArg(name, args) || preview;
+    previewEl.title = preview;
     chip.append(previewEl);
   }
   const time = document.createElement("span");
@@ -1184,6 +1187,10 @@ function updateGroupHead(group) {
   const total = chips.reduce((sum, chip) => sum + (chip.__detail?.durationMs || 0), 0);
   const totalText = formatDuration(total);
   group.querySelector(".toolTime").textContent = totalText ? `· ${totalText}` : "";
+  const errors = chips.filter((chip) => chip.classList.contains("error")).length;
+  group.classList.toggle("hasError", errors > 0);
+  const badge = group.querySelector(".toolErrorBadge");
+  if (badge) badge.textContent = errors ? `${errors} ош.` : "";
   group.classList.toggle("isCollapsed", chips.length >= 3);
 }
 
@@ -1206,6 +1213,9 @@ function toolGroupHead(group) {
   const time = document.createElement("span");
   time.className = "toolTime";
   head.append(time);
+  const badge = document.createElement("span");
+  badge.className = "toolErrorBadge";
+  head.append(badge);
   head.append(svgIcon("chevron-down", "icon chev"));
   const toggle = () => {
     group.classList.toggle("isCollapsed");
@@ -1252,7 +1262,9 @@ function ensureToolBlock() {
   count.className = "toolCount";
   const time = document.createElement("span");
   time.className = "toolTime";
-  toolBlockHead.append(icon, label, count, time, svgIcon("chevron-down", "icon chev"));
+  const badge = document.createElement("span");
+  badge.className = "toolErrorBadge";
+  toolBlockHead.append(icon, label, count, time, badge, svgIcon("chevron-down", "icon chev"));
   const toggle = () => {
     toolBlock.classList.toggle("isOpen");
     toolBlockHead.setAttribute("aria-expanded", String(toolBlock.classList.contains("isOpen")));
@@ -1276,8 +1288,29 @@ function updateToolBlockHead() {
   const chips = [...toolBlockList.querySelectorAll(".tool")];
   const total = chips.reduce((sum, chip) => sum + (chip.__detail?.durationMs || 0), 0);
   const totalText = formatDuration(total);
+  const errors = chips.filter((chip) => chip.classList.contains("error")).length;
   toolBlockHead.querySelector(".toolCount").textContent = `· ${chips.length}`;
   toolBlockHead.querySelector(".toolTime").textContent = totalText ? `· ${totalText}` : "";
+  toolBlockHead.classList.toggle("hasError", errors > 0);
+  const badge = toolBlockHead.querySelector(".toolErrorBadge");
+  if (badge) badge.textContent = errors ? `${errors} ош.` : "";
+}
+
+// Live elapsed timer for running chips (500ms tick, stops when none run).
+let toolElapsedTimer = null;
+function startToolElapsedTicker() {
+  if (toolElapsedTimer) return;
+  toolElapsedTimer = setInterval(() => {
+    if (!streamWrapper) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; return; }
+    const running = [...streamWrapper.querySelectorAll(".tool.isRunning:not(.done):not(.error):not(.isWaiting)")];
+    if (!running.length) { clearInterval(toolElapsedTimer); toolElapsedTimer = null; return; }
+    for (const chip of running) {
+      const startedAt = chip.__detail?.startedAt;
+      if (!startedAt) continue;
+      const elapsed = formatDuration(Date.now() - startedAt);
+      chip.querySelector(".toolTime").textContent = elapsed ? `· ${elapsed}` : "";
+    }
+  }, 500);
 }
 
 function appendToolChip(chip, name) {
@@ -1317,7 +1350,8 @@ granka.onTool((tool) => {
     // Subagents are always visible, even when other tools are hidden: the
     // user must see who is working on their behalf.
     if (toolMode() === "off" && tool.name !== "task") return;
-    const chip = makeToolChip(tool.name, tool.args);
+    const chip = makeToolChip(tool.name, tool.args, tool.toolCallId);
+    startToolElapsedTicker();
     if (tool.name === "task") {
       streamWrapper.insertBefore(chip, streamBody);
       scrollIf(stick);
@@ -1335,8 +1369,17 @@ granka.onTool((tool) => {
     }
     appendToolChip(chip, tool.name);
   } else {
-    const pending = [...streamWrapper.querySelectorAll(".tool.isRunning:not(.done):not(.error)")];
-    const chip = pending[pending.length - 1];
+    // Bind end to the exact call by id (parallel tools finish out of order);
+    // fall back to the last running chip for legacy events without an id.
+    let chip = null;
+    if (tool.toolCallId) {
+      chip = [...streamWrapper.querySelectorAll(".tool.isRunning:not(.done):not(.error)")]
+        .find((el) => el.__detail?.toolCallId === tool.toolCallId) ?? null;
+    }
+    if (!chip) {
+      const pending = [...streamWrapper.querySelectorAll(".tool.isRunning:not(.done):not(.error)")];
+      chip = pending[pending.length - 1] ?? null;
+    }
     if (chip) {
       chip.__detail.result = tool.result ?? "";
       chip.__detail.durationMs = tool.durationMs ?? 0;
@@ -1377,6 +1420,16 @@ granka.onNotice((notice) => {
   }
   if (notice.kind === "subagent") {
     addDivider(`подагент: ${notice.description} · ${notice.chars} символов`);
+    return;
+  }
+  if (notice.kind === "subtool") {
+    // Live progress inside the running task chip (last one wins).
+    const chips = streamWrapper ? [...streamWrapper.querySelectorAll('.tool[data-name="task"].isRunning')] : [];
+    const chip = chips[chips.length - 1];
+    const status = chip?.querySelector(".toolStatus");
+    if (status) {
+      status.textContent = notice.phase === "start" ? `работает · ${notice.name}…` : `работает · ${notice.name} готово`;
+    }
     return;
   }
   if (notice.kind === "compaction") {
@@ -1496,6 +1549,13 @@ function argsSection(args) {
 }
 
 function toggleToolDetail(chip) {
+  // Only one detail open at a time: close siblings first.
+  for (const other of [...chip.parentElement.querySelectorAll(".toolDetail")]) {
+    other.remove();
+  }
+  for (const other of [...chip.parentElement.querySelectorAll(".tool[aria-expanded='true']")]) {
+    other.setAttribute("aria-expanded", "false");
+  }
   const existing = chip.nextElementSibling;
   if (existing?.classList.contains("toolDetail")) {
     existing.remove();
@@ -1504,6 +1564,8 @@ function toggleToolDetail(chip) {
   }
   const detail = document.createElement("div");
   detail.className = "toolDetail";
+  detail.setAttribute("role", "region");
+  detail.setAttribute("aria-label", `Детали инструмента ${chip.__detail?.name ?? ""}`);
   const { name, args, result, durationMs, isError } = chip.__detail;
   const label = TOOL_LABELS[name] ?? name;
   const head = document.createElement("div");
@@ -2072,16 +2134,60 @@ function renderHistoryTurn(message, promptText) {
   }
   wrapper.__prompt = promptText ?? "";
   if (message.thinking && thinkingMode() !== "off") {
-    const block = buildThinkingBlock(message.thinking, thinkingMode() === "always");
+    const block = buildThinkingBlock(message.thinking, thinkingMode() === "always", message.thinkingMs);
     wrapper.insertBefore(block, body);
   }
-  for (const tool of message.tools ?? []) {
-    appendHistoryTool(wrapper, tool);
+  const historyTools = message.tools ?? [];
+  if (historyTools.length && toolMode() !== "off") {
+    // Same summary as live: one collapsible block per turn instead of a
+    // flat row of identical pills.
+    const block = document.createElement("div");
+    block.className = "toolBlock";
+    const head = document.createElement("div");
+    head.className = "toolBlockHead";
+    head.tabIndex = 0;
+    head.setAttribute("role", "button");
+    head.setAttribute("aria-expanded", "false");
+    head.append(svgIcon("terminal"));
+    const headLabel = document.createElement("span");
+    headLabel.className = "toolLabel";
+    headLabel.textContent = "инструменты";
+    const headCount = document.createElement("span");
+    headCount.className = "toolCount";
+    const headTime = document.createElement("span");
+    headTime.className = "toolTime";
+    const headBadge = document.createElement("span");
+    headBadge.className = "toolErrorBadge";
+    head.append(headLabel, headCount, headTime, headBadge, svgIcon("chevron-down", "icon chev"));
+    const list = document.createElement("div");
+    list.className = "toolList";
+    block.append(head, list);
+    const toggle = () => {
+      block.classList.toggle("isOpen");
+      head.setAttribute("aria-expanded", String(block.classList.contains("isOpen")));
+    };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
+    });
+    let total = 0;
+    let errors = 0;
+    for (const tool of historyTools) {
+      const chip = appendHistoryTool(list, tool);
+      total += chip.__detail.durationMs || 0;
+      if (chip.classList.contains("error")) errors += 1;
+    }
+    headCount.textContent = `· ${historyTools.length}`;
+    const totalText = formatDuration(total);
+    headTime.textContent = totalText ? `· ${totalText}` : "";
+    headBadge.textContent = errors ? `${errors} ош.` : "";
+    head.classList.toggle("hasError", errors > 0);
+    wrapper.insertBefore(block, body);
   }
   if (message.usage) addUsage(wrapper, message.usage);
 }
 
-function buildThinkingBlock(text, open) {
+function buildThinkingBlock(text, open, durationMs) {
   const block = document.createElement("div");
   block.className = `thinking${open ? " isOpen" : ""}`;
   block.tabIndex = 0;
@@ -2089,10 +2195,15 @@ function buildThinkingBlock(text, open) {
   block.setAttribute("aria-expanded", String(open));
   const head = document.createElement("div");
   head.className = "thinkingHead";
-  head.append(svgIcon("chevron-down"));
+  head.append(svgIcon("brain"));
   const title = document.createElement("span");
   title.textContent = "мышление";
   head.append(title);
+  const time = document.createElement("span");
+  time.className = "thinkingTime";
+  const durationText = formatDuration(durationMs);
+  time.textContent = durationText ? `· ${durationText}` : "";
+  head.append(time);
   const body = document.createElement("pre");
   body.className = "thinkingBody";
   body.textContent = text;
@@ -2108,8 +2219,8 @@ function buildThinkingBlock(text, open) {
   return block;
 }
 
-function appendHistoryTool(wrapper, tool) {
-  const chip = makeToolChip(tool.name, tool.args);
+function appendHistoryTool(parent, tool) {
+  const chip = makeToolChip(tool.name, tool.args, tool.toolCallId);
   chip.__detail.result = tool.result ?? "";
   chip.__detail.durationMs = tool.durationMs ?? 0;
   chip.__detail.isError = Boolean(tool.isError);
@@ -2118,9 +2229,8 @@ function appendHistoryTool(wrapper, tool) {
   setToolIcon(chip, tool.isError ? "circle-alert" : "check");
   const time = formatDuration(tool.durationMs);
   chip.querySelector(".toolTime").textContent = time ? `· ${time}` : "";
-  if (toolMode() === "off") return;
-  // History renders flat chips (grouping was a live-only nicety).
-  wrapper.insertBefore(chip, wrapper.querySelector(".text"));
+  parent.append(chip);
+  return chip;
 }
 
 function renderHistoryWindow() {
