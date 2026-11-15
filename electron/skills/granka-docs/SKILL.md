@@ -25,14 +25,23 @@ description: Работа с PDF и DOCX в granka через doc_outline/doc_re
 ## Оформление существующего файла
 
 `doc_format(path, { style })` перерисовывает документ с новым стилем: текст,
-заголовки, списки и таблицы сохраняются. Теряются картинки и ручные переносы —
-предупреди пользователя, если это важно.
+заголовки, списки, таблицы и картинки сохраняются. Ручные переносы теряются —
+предупреди пользователя, если это важно. Перед `doc_edit`/`doc_format` оригинал
+сохраняется в `<файл>.granka-versions/` (последние 10 версий) — откат
+копированием обратно.
 
 ## Точечные правки
 
-- DOCX: `{ type: "replace", find, replace }`, `{ type: "append", content, heading }`.
-- PDF: `{ type: "add_text", page, x, y, text, size }`, `{ type: "redact", ... }`,
-  `{ type: "add_page" }`, `{ type: "fill_form", fields }`, `{ type: "merge", source }`.
+- DOCX: `{ type: "replace", find, replace }` (ищет и через разрывы строк Word),
+  `{ type: "append", content, heading }`.
+- PDF: `{ type: "add_text", page, x, y, text, size }`,
+  `{ type: "redact", page, x, y, width, height }` (настоящее удаление текста +
+  плашка), `{ type: "add_page" }`, `{ type: "fill_form", fields }` (текст,
+  чекбокс, список, radio; форма не убивается), `{ type: "merge", sources }`,
+  `{ type: "rotate", page, degrees }`, `{ type: "delete_pages"/"extract_pages"/"reorder_pages", pages }`,
+  `{ type: "split", at }`.
+- Таблицы/табличные данные: PDF читается по координатам (таблицы и колонки
+  сохраняются), XLSX/ODS/CSV/RTF тоже поддерживаются через doc_read/search.
 - Текст внутри абзаца PDF не переписывается: только наложение или перерисовка.
 
 ## Проверка результата

@@ -127,3 +127,26 @@ import { assertNotSensitive } from "../electron/docs.mjs";
 assert.throws(() => assertNotSensitive(path.join(os.homedir(), ".granka", "auth.json")), /запрещено/);
 assert.throws(() => assertNotSensitive(path.join(os.homedir(), ".ssh", "id_rsa")), /запрещено/);
 assert.equal(assertNotSensitive("/tmp/some-doc.pdf"), "/tmp/some-doc.pdf");
+
+// redact really removes text (not just a white box), and edits keep versions
+const redactPdf = path.join(dir, "redact.pdf");
+await run(tools.createTool, { path: redactPdf, content: "# Заголовок\n\nСекретное слово ЗЕБРА.\n\nОбычный текст." });
+await run(tools.editTool, { path: redactPdf, ops: [{ type: "redact", page: 1, x: 35, y: 600, width: 500, height: 200 }] });
+const afterRedact = await run(tools.outlineTool, { path: redactPdf });
+assert.ok(!afterRedact.includes("ЗЕБРА"), "redact must remove text from extraction");
+const versions = revisionsOf(redactPdf);
+assert.ok(versions.length >= 1, "edit must keep a version backup");
+function revisionsOf(file) {
+  const vdir = `${file}.granka-versions`;
+  try { return fs.readdirSync(vdir); } catch { return []; }
+}
+// split/rotate/merge-multi smoke
+const multi = path.join(dir, "multi.pdf");
+await run(tools.createTool, { path: multi, content: "Первая страница.\n\nВторая страница." });
+const merged = await run(tools.editTool, { path: multi, ops: [{ type: "merge", sources: [redactPdf] }] });
+assert.match(merged, /добавлено страниц/);
+// CSV reading smoke
+const csv = path.join(dir, "t.csv");
+fs.writeFileSync(csv, "Имя;Город\nИван;Москва");
+const csvRead = await run(tools.readTool, { path: csv });
+assert.match(csvRead, /Иван/);

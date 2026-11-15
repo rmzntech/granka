@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld("granka", {
 
   attachFiles: (paths) => ipcRenderer.invoke("attach:add", paths),
   attachmentDataUrl: (filePath) => ipcRenderer.invoke("attach:dataUrl", filePath),
+  docPreview: (filePath) => ipcRenderer.invoke("doc:preview", filePath),
   onAttachProgress: (cb) => ipcRenderer.on("attach:progress", (_event, progress) => cb(progress)),
   attachImage: (payload) => ipcRenderer.invoke("attach:image", payload),
   attachText: (payload) => ipcRenderer.invoke("attach:text", payload),

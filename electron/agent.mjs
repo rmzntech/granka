@@ -1538,7 +1538,7 @@ export async function attachFiles(paths = [], onProgress = () => {}) {
         seenHashes.set(digest, target);
       }
       const ext = path.extname(name).toLowerCase();
-      const kind = [".pdf", ".docx", ".md", ".txt", ".html", ".htm"].includes(ext)
+      const kind = [".pdf", ".docx", ".md", ".txt", ".html", ".htm", ".xlsx", ".ods", ".csv", ".rtf"].includes(ext)
         ? "document"
         : [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)
           ? "image"
@@ -1578,6 +1578,27 @@ export function attachmentDataUrl(filePath) {
   } catch (err) {
     console.error("[granka attachmentDataUrl]", err?.message ?? err);
     return { ok: false };
+  }
+}
+
+// Text preview of an attached document (PDF/DOCX/sheets) as escaped HTML
+// for the sandboxed preview window — pdf.js is unavailable without new
+// dependencies, so the preview is the extracted text with page markers.
+export async function docPreview(filePath) {
+  try {
+    const target = path.resolve(String(filePath ?? ""));
+    if (!target.startsWith(ATTACH_DIR + path.sep) && !target.startsWith(SESSION_DIR + path.sep)) {
+      return { ok: false, error: "файл вне каталогов granka" };
+    }
+    const { createDocTools } = await import("./docs.mjs");
+    const tools = createDocTools({ resolve: (p) => p, emit: () => {} });
+    const outline = await tools.outlineTool.execute("preview", { path: target }, undefined, undefined, {});
+    const text = outline.content[0].text;
+    const escape = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const html = `<pre style="font:13px/1.6 sans-serif;white-space:pre-wrap">${escape(text)}</pre>`;
+    return { ok: true, html, title: path.basename(target) };
+  } catch (err) {
+    return { ok: false, error: String(err?.message ?? err) };
   }
 }
 

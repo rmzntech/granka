@@ -128,10 +128,76 @@ function kindOf(filePath) {
   const ext = path.extname(String(filePath)).toLowerCase();
   if (ext === ".pdf") return "pdf";
   if (ext === ".docx") return "docx";
+  if (ext === ".xlsx") return "xlsx";
+  if (ext === ".ods") return "ods";
+  if (ext === ".csv") return "csv";
+  if (ext === ".rtf") return "rtf";
   if (ext === ".md") return "md";
   if (ext === ".txt") return "txt";
   if (ext === ".html" || ext === ".htm") return "html";
   return "other";
+}
+
+// --- spreadsheets / plain formats (pure JS, no new dependencies) --------
+
+function xmlText(xml) {
+  return decodeEntities(String(xml ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim());
+}
+
+async function sheetBlocks(filePath) {
+  const kind = kindOf(filePath);
+  if (kind === "csv") {
+    const raw = await fs.readFile(filePath, "utf8");
+    const rows = raw.split(/\r?\n/).filter((l) => l.trim()).map((line) =>
+      line.split(/\t|,|;/).map((c) => c.trim().replace(/^"|"$/g, "")),
+    );
+    return rows.length ? [{ type: "table", rows }] : [];
+  }
+  if (kind === "rtf") {
+    const raw = await fs.readFile(filePath, "utf8");
+    const text = raw.replace(/\\par[d]?/g, "\n").replace(/\\[a-z]+-?\d* ?/g, " ").replace(/[{}]/g, "").replace(/\\'([0-9a-fA-F]{2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16))).replace(/\s+/g, " ").trim();
+    return text ? text.split(/\n+/).map((t) => ({ type: "p", text: t.trim() })).filter((b) => b.text) : [];
+  }
+  // XLSX / ODS are zip archives: read shared strings + sheet XML via fflate.
+  const { unzipSync } = await import("fflate");
+  const raw = new Uint8Array(await fs.readFile(filePath));
+  const files = unzipSync(raw);
+  const decoder = new TextDecoder("utf-8");
+  const read = (name) => (files[name] ? decoder.decode(files[name]) : "");
+  const blocks = [];
+  if (kind === "xlsx") {
+    const shared = [...read("xl/sharedStrings.xml").matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((m) => xmlText(m[1]));
+    const sheetNames = Object.keys(files).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort();
+    for (const sheetName of sheetNames) {
+      const xml = read(sheetName);
+      const rows = [];
+      for (const rowMatch of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+        const cells = [];
+        for (const cellMatch of rowMatch[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+          const attrs = cellMatch[1];
+          const type = /t="([^"]*)"/.exec(attrs)?.[1];
+          const inner = cellMatch[2];
+          if (type === "s") cells.push(shared[Number(xmlText(inner))] ?? "");
+          else if (type === "inlineStr") cells.push(xmlText(inner));
+          else cells.push(xmlText(inner));
+        }
+        if (cells.some(Boolean)) rows.push(cells);
+      }
+      if (rows.length) blocks.push({ type: "table", rows });
+    }
+  } else if (kind === "ods") {
+    const xml = read("content.xml");
+    const rows = [];
+    for (const rowMatch of xml.matchAll(/<table:table-row[^>]*>([\s\S]*?)<\/table:table-row>/g)) {
+      const cells = [];
+      for (const cellMatch of rowMatch[1].matchAll(/<table:table-cell[^>]*>([\s\S]*?)<\/table:table-cell>/g)) {
+        cells.push(xmlText(cellMatch[1]));
+      }
+      if (cells.some(Boolean)) rows.push(cells);
+    }
+    if (rows.length) blocks.push({ type: "table", rows });
+  }
+  return blocks;
 }
 
 async function ensureReadable(filePath) {
@@ -151,18 +217,91 @@ function clip(text, limit = toolOutputLimit()) {
   return { text: text.slice(0, limit), truncated: text.length > limit };
 }
 
+// Reconstruct page text from positioned items: group by line (y), sort by x,
+// and split into columns/tables on large horizontal gaps. This keeps table
+// rows and multi-column layouts instead of flattening them into a blob.
+function itemsToPageText(items) {
+  const lines = [];
+  for (const item of items ?? []) {
+    const text = String(item.str ?? "").trim();
+    if (!text) continue;
+    const y = Math.round((item.y ?? 0) / Math.max(item.height ?? 10, 6));
+    let line = lines.find((l) => Math.abs(l.y - y) <= 1);
+    if (!line) { line = { y, parts: [] }; lines.push(line); }
+    line.parts.push({ x: item.x ?? 0, w: item.width ?? 0, text, size: item.fontSize ?? 10 });
+  }
+  lines.sort((a, b) => b.y - a.y);
+  return lines.map((line) => {
+    line.parts.sort((a, b) => a.x - b.x);
+    const out = [];
+    let prev = null;
+    for (const part of line.parts) {
+      if (prev) {
+        const gap = part.x - (prev.x + prev.w);
+        // Large gap relative to font size = table column / column break.
+        out.push(gap > Math.max(14, part.size * 1.2) ? "\t" : " ");
+      }
+      out.push(part.text);
+      prev = part;
+    }
+    return out.join("").replace(/\t+/g, "\t").trim();
+  }).filter(Boolean).join("\n");
+}
+
+// Detect repeated header/footer lines (same text on >50% of pages at the
+// top or bottom) and strip them so they do not pollute search/read.
+function stripRunningHeaders(pages) {
+  if (pages.length < 3) return pages;
+  const split = pages.map((p) => String(p).split("\n").filter(Boolean));
+  const countEdge = (idxFromStart) => {
+    const counts = new Map();
+    for (const lines of split) {
+      const line = idxFromStart ? lines[lines.length - 1] : lines[0];
+      if (line) counts.set(line, (counts.get(line) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const threshold = Math.ceil(pages.length / 2);
+  const headers = countEdge(false);
+  const footers = countEdge(true);
+  return split.map((lines) => {
+    let out = lines;
+    if (out.length && (headers.get(out[0]) ?? 0) >= threshold) out = out.slice(1);
+    if (out.length && (footers.get(out[out.length - 1]) ?? 0) >= threshold) out = out.slice(0, -1);
+    return out.join("\n");
+  });
+}
+
 async function pdfText(filePath, stat) {
   stat = stat ?? (await ensureReadable(filePath));
   const cached = cacheGet(filePath, stat);
   if (cached) return cached;
-  const { getDocumentProxy, extractText } = await import("unpdf");
+  const { getDocumentProxy, extractTextItems, extractText } = await import("unpdf");
   const buffer = await fs.readFile(filePath);
   const pdf = await getDocumentProxy(new Uint8Array(buffer));
-  const { totalPages, text } = await extractText(pdf, { mergePages: false });
+  // Cheap gate first: numPages is known before any page is parsed.
+  const totalPages = pdf.numPages ?? 0;
   if (totalPages > MAX_PAGES) throw new Error(`слишком много страниц: ${totalPages} (лимит ${MAX_PAGES})`);
-  const result = { totalPages, pages: text.map((page) => String(page ?? "")) };
+  let pages;
+  try {
+    const { items } = await extractTextItems(pdf);
+    pages = items.map((pageItems) => itemsToPageText(pageItems));
+  } catch {
+    const { text } = await extractText(pdf, { mergePages: false });
+    pages = text.map((page) => String(page ?? ""));
+  }
+  pages = stripRunningHeaders(pages);
+  const result = { totalPages, pages };
   cacheSet(filePath, stat, result);
   return result;
+}
+
+// Cheap page count for attachment chips: numPages without extracting text.
+export async function pdfPageCount(filePath) {
+  const { getDocumentProxy } = await import("unpdf");
+  const buffer = await fs.readFile(filePath);
+  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  return pdf.numPages ?? 0;
 }
 
 // Cheap metadata for attachments: page/block counts shown in the chip so
@@ -171,8 +310,14 @@ export async function docInfo(filePath) {
   try {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === ".pdf") {
-      const { totalPages } = await pdfText(filePath);
-      return { pages: totalPages };
+      const totalPages = await pdfPageCount(filePath).catch(() => 0);
+      if (totalPages) return { pages: totalPages };
+      const { totalPages: parsed } = await pdfText(filePath);
+      return { pages: parsed };
+    }
+    if ([".xlsx", ".ods", ".csv"].includes(ext)) {
+      const blocks = await sheetBlocks(filePath);
+      return { blocks: blocks.length };
     }
     if (ext === ".docx") {
       const blocks = await docxBlocks(filePath);
@@ -198,11 +343,12 @@ function decodeEntities(text) {
 
 function htmlToBlocks(html) {
   const blocks = [];
-  const hasImages = /<img\b/i.test(html);
   const pattern = /<(h[1-6]|p|li|tr)[^>]*>([\s\S]*?)<\/\1>/gi;
   let match;
   while ((match = pattern.exec(html))) {
     const tag = match[1].toLowerCase();
+    // Images inside the block become real image blocks (order preserved).
+    const imgMatches = [...match[2].matchAll(/<img\b[^>]*>/gi)];
     let raw;
     let cells = null;
     if (tag === "tr") {
@@ -218,6 +364,16 @@ function htmlToBlocks(html) {
       raw = match[2].replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
     }
     const text = decodeEntities(raw);
+    for (const img of imgMatches) {
+      const src = /src=["']([^"']+)["']/i.exec(img[0])?.[1] ?? "";
+      const alt = decodeEntities(/alt=["']([^"']*)["']/i.exec(img[0])?.[1] ?? "");
+      const dataMatch = /^data:([^;,]+);base64,(.*)$/s.exec(src);
+      if (dataMatch) {
+        blocks.push({ type: "image", alt, contentType: dataMatch[1], data: Buffer.from(dataMatch[2], "base64") });
+      } else if (src) {
+        blocks.push({ type: "image", alt, src });
+      }
+    }
     if (!text) continue;
     if (tag === "h1") blocks.push({ type: "h1", text });
     else if (tag === "h2") blocks.push({ type: "h2", text });
@@ -227,7 +383,6 @@ function htmlToBlocks(html) {
     else if (tag === "tr") blocks.push({ type: "tableRow", text, cells });
     else blocks.push({ type: "p", text });
   }
-  if (hasImages) blocks.push({ type: "note", text: "⚠ в документе есть картинки: они не переносятся в текстовые блоки" });
   return blocks;
 }
 
@@ -236,9 +391,14 @@ async function docxBlocks(filePath, stat) {
   const cached = cacheGet(filePath, stat);
   if (cached) return cached;
   const mammoth = (await import("mammoth")).default;
-  const { value: html } = await mammoth.convertToHtml({ path: filePath });
+  const convertImage = mammoth.images.imgElement(async (image) => {
+    const data = await image.readAsBuffer();
+    return { src: `data:${image.contentType};base64,${data.toString("base64")}` };
+  });
+  const { value: html } = await mammoth.convertToHtml({ path: filePath }, { convertImage });
   const blocks = htmlToBlocks(html);
-  // merge consecutive table rows into a table
+  // Headers/footers, footnotes and comments live in separate XML parts.
+  const extra = await docxExtraBlocks(filePath);
   const merged = [];
   let table = null;
   for (const block of blocks) {
@@ -255,13 +415,85 @@ async function docxBlocks(filePath, stat) {
     merged.push(block);
   }
   if (table) merged.push(table);
-  cacheSet(filePath, stat, merged);
-  return merged;
+  const result = [...extra.header, ...merged, ...extra.footer, ...extra.notes];
+  cacheSet(filePath, stat, result);
+  return result;
+}
+
+// Headers/footers/footnotes/comments/tracked changes from the zip parts
+// mammoth does not surface in the body HTML.
+async function docxExtraBlocks(filePath) {
+  const extra = { header: [], footer: [], notes: [] };
+  try {
+    const { unzipSync } = await import("fflate");
+    const raw = new Uint8Array(await fs.readFile(filePath));
+    const files = unzipSync(raw);
+    const decoder = new TextDecoder("utf-8");
+    const textOf = (xml) => decodeEntities(String(xml ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+    for (const name of Object.keys(files).sort()) {
+      const xml = decoder.decode(files[name]);
+      if (/^word\/header\d*\.xml$/.test(name)) {
+        const text = textOf(xml);
+        if (text) extra.header.push({ type: "header", text });
+      } else if (/^word\/footer\d*\.xml$/.test(name)) {
+        const text = textOf(xml);
+        if (text) extra.footer.push({ type: "footer", text });
+      } else if (name === "word/footnotes.xml") {
+        for (const m of xml.matchAll(/<w:footnote[^>]*>([\s\S]*?)<\/w:footnote>/g)) {
+          const text = textOf(m[1]);
+          if (text) extra.notes.push({ type: "footnote", text });
+        }
+      } else if (name === "word/comments.xml") {
+        for (const m of xml.matchAll(/<w:comment[^>]*>([\s\S]*?)<\/w:comment>/g)) {
+          const text = textOf(m[1]);
+          if (text) extra.notes.push({ type: "comment", text });
+        }
+      }
+    }
+    // Tracked insertions/deletions in the body.
+    const body = files["word/document.xml"] ? decoder.decode(files["word/document.xml"]) : "";
+    for (const m of body.matchAll(/<w:(ins|del)[^>]*>([\s\S]*?)<\/w:\1>/g)) {
+      const text = textOf(m[2]);
+      if (text) extra.notes.push({ type: m[1] === "ins" ? "insertion" : "deletion", text });
+    }
+    // TOC / field instructions.
+    for (const m of body.matchAll(/<w:instrText[^>]*>([\s\S]*?)<\/w:instrText>/g)) {
+      const text = textOf(m[1]);
+      if (text) extra.notes.push({ type: "field", text });
+    }
+  } catch (err) { console.error("[granka docxExtra]", err?.message ?? err); }
+  return extra;
 }
 
 async function plainText(filePath) {
   const raw = await fs.readFile(filePath, "utf8");
-  if (kindOf(filePath) === "html") return decodeEntities(raw.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+  if (kindOf(filePath) === "md") {
+    // Inline small local images as data URLs so the model (and chat
+    // markdown, which only allows https/data) can actually see them.
+    const dir = path.dirname(filePath);
+    let out = raw;
+    for (const match of raw.matchAll(/!\[([^\]]*)\]\(([^)\s]+)\)/g)) {
+      const src = match[2];
+      if (/^(https?:|data:)/.test(src)) continue;
+      try {
+        const imagePath = path.resolve(dir, src);
+        const stat = await fs.stat(imagePath);
+        if (stat.size > 200_000) continue;
+        const ext = path.extname(imagePath).toLowerCase();
+        const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" }[ext];
+        if (!mime) continue;
+        const dataUrl = `data:${mime};base64,${(await fs.readFile(imagePath)).toString("base64")}`;
+        out = out.split(match[0]).join(`![${match[1]}](${dataUrl})`);
+      } catch {}
+    }
+    return out;
+  }
+  if (kindOf(filePath) === "html") {
+    // Keep document structure: headings/lists/tables become readable lines
+    // instead of one flattened blob.
+    const blocks = htmlToBlocks(raw);
+    return blocks.map((block) => block.type === "table" ? block.rows.map((row) => row.join(" | ")).join("\n") : block.text ?? "").filter(Boolean).join("\n\n");
+  }
   return raw;
 }
 
@@ -284,8 +516,14 @@ export function parseMarkdownLite(source) {
     const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
     if (heading) {
       flushTable();
-      const level = Math.min(heading[1].length, 4);
+      const level = Math.min(heading[1].length, 6);
       blocks.push({ type: `h${level}`, text: heading[2] });
+      continue;
+    }
+    const image = /^!\[([^\]]*)\]\(([^)\s]+)\)$/.exec(trimmed);
+    if (image) {
+      flushTable();
+      blocks.push({ type: "image", alt: image[1], src: image[2] });
       continue;
     }
     if (/^\|.*\|$/.test(trimmed)) {
@@ -296,14 +534,14 @@ export function parseMarkdownLite(source) {
       continue;
     }
     flushTable();
-    const bullet = /^[-*]\s+(.*)$/.exec(trimmed);
+    const bullet = /^(\s*)[-*]\s+(.*)$/.exec(line);
     if (bullet) {
-      blocks.push({ type: "li", text: bullet[1] });
+      blocks.push({ type: "li", text: bullet[2], level: Math.min(Math.floor(bullet[1].length / 2), 2) });
       continue;
     }
-    const numbered = /^\d+\.\s+(.*)$/.exec(trimmed);
+    const numbered = /^(\s*)\d+\.\s+(.*)$/.exec(line);
     if (numbered) {
-      blocks.push({ type: "li", text: numbered[1], ordered: true });
+      blocks.push({ type: "li", text: numbered[2], ordered: true, level: Math.min(Math.floor(numbered[1].length / 2), 2) });
       continue;
     }
     blocks.push({ type: "p", text: trimmed });
@@ -364,10 +602,22 @@ async function writeDocx(filePath, blocks, style) {
     h2: HeadingLevel.HEADING_2,
     h3: HeadingLevel.HEADING_3,
     h4: HeadingLevel.HEADING_4,
+    h5: HeadingLevel.HEADING_5,
+    h6: HeadingLevel.HEADING_6,
   };
 
   const children = [];
   for (const block of blocks) {
+    if (block.type === "image") {
+      const data = block.data ?? (block.src ? Buffer.from(String(block.src).split(",")[1] ?? "", "base64") : null);
+      const type = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp" }[block.contentType ?? ""];
+      if (data && type) {
+        children.push(new Paragraph({ children: [new docx.ImageRun({ data, type, transformation: { width: 480, height: 360 } })] }));
+      } else if (block.alt) {
+        children.push(new Paragraph({ children: runsOf(`[картинка: ${block.alt}]`, { font, size: half }) }));
+      }
+      continue;
+    }
     if (block.type in headingLevels) {
       children.push(
         new Paragraph({
@@ -379,10 +629,12 @@ async function writeDocx(filePath, blocks, style) {
       continue;
     }
     if (block.type === "li") {
+      const level = Math.min(Number(block.level) || 0, 2);
       children.push(
         new Paragraph({
-          bullet: block.ordered ? undefined : { level: 0 },
-          numbering: block.ordered ? { reference: "ordered", level: 0 } : undefined,
+          bullet: block.ordered ? undefined : { level },
+          numbering: block.ordered ? { reference: "ordered", level } : undefined,
+          indent: level ? { left: level * 360 } : undefined,
           spacing: { after: 60 },
           children: runsOf(block.text, { font, size: half }),
         }),
@@ -434,11 +686,18 @@ async function writeDocx(filePath, blocks, style) {
   }
 
   const document = new Document({
+    title: style.title || "",
+    author: style.author || "granka",
+    description: style.description || "",
     numbering: {
       config: [
         {
           reference: "ordered",
-          levels: [{ level: 0, format: "decimal", text: "%1.", alignment: AlignmentType.START }],
+          levels: [
+            { level: 0, format: "decimal", text: "%1.", alignment: AlignmentType.START },
+            { level: 1, format: "decimal", text: "%2.", alignment: AlignmentType.START },
+            { level: 2, format: "decimal", text: "%3.", alignment: AlignmentType.START },
+          ],
         },
       ],
     },
@@ -495,6 +754,32 @@ async function patchDocxXml(filePath, patch) {
 
 function xmlEscape(text) {
   return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Replace across Word runs: a phrase split over several <w:t> elements
+// (Word does this constantly) is matched on the concatenated paragraph
+// text and rewritten into the first run, keeping its styling.
+function replaceAcrossRuns(xml, find, replacement) {
+  const findEsc = xmlEscape(find);
+  if (!findEsc) return xml;
+  // Fast path: phrase inside a single run.
+  if (xml.includes(findEsc)) return xml.split(findEsc).join(xmlEscape(replacement));
+  const textOfRun = (runXml) => decodeEntities(runXml.replace(/<[^>]+>/g, ""));
+  return xml.replace(/<w:p[\s\S]*?<\/w:p>/g, (paragraph) => {
+    const runs = [...paragraph.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)];
+    if (!runs.length) return paragraph;
+    const full = runs.map((r) => textOfRun(r[1])).join("");
+    if (!full.includes(find)) return paragraph;
+    const next = full.split(find).join(replacement);
+    let out = paragraph;
+    let first = true;
+    for (const run of runs) {
+      const tag = `<w:t${run[0].includes("xml:space") ? ' xml:space="preserve"' : ""}>${xmlEscape(first ? next : "")}</w:t>`;
+      out = out.replace(run[0], tag);
+      first = false;
+    }
+    return out;
+  });
 }
 
 function paragraphXml(text, style = {}) {
@@ -678,7 +963,7 @@ async function writePdf(filePath, blocks, style) {
     }
   });
 
-  const bytes = await doc.save();
+  const bytes = await doc.save({ useObjectStreams: true });
   await fs.mkdir(path.dirname(path.resolve(filePath)), { recursive: true });
   await fs.writeFile(filePath, Buffer.from(bytes));
   return { bytes: bytes.length, pages: doc.getPageCount(), unicodeFont: Boolean(unicode) };
@@ -696,10 +981,81 @@ function styleOf(raw = {}) {
     page: raw.page ?? "a4",
     tableHeadFill: raw.tableHeadFill ?? "EFF3F8",
     align: raw.align ?? "left",
+    title: raw.title ?? "",
+    author: raw.author ?? "",
+    description: raw.description ?? "",
   };
 }
 
 // -------------------------------------------------------------------- tools
+
+// Fill one form field trying each field kind in turn (text, checkbox,
+// dropdown/combo, option list, radio group). No flatten: the form survives.
+function tryFillField(form, field, value) {
+  const attempts = [
+    () => form.getTextField(field).setText(String(value)),
+    () => (value ? form.getCheckBox(field).check() : form.getCheckBox(field).uncheck()),
+    () => form.getDropdown(field).select(String(value)),
+    () => form.getOptionList(field).select([String(value)]),
+    () => form.getRadioGroup(field).select(String(value)),
+  ];
+  for (const attempt of attempts) {
+    try { attempt(); return true; } catch {}
+  }
+  return false;
+}
+
+// Real redaction: decode each page content stream, drop text-showing
+// operators (Tj/TJ) whose Tm text position falls inside the rect, then
+// re-encode. The caller paints an opaque rectangle over what remains
+// (vector graphics), so text is neither visible nor extractable.
+async function redactPageText(page, rect, lib) {
+  const { PDFName } = lib;
+  const { decompressSync, zlibSync } = await import("fflate");
+  let removed = 0;
+  const raw = page.node.get(PDFName.of("Contents"));
+  if (!raw) return 0;
+  const refs = raw.asArray ? raw.asArray() : [raw];
+  for (const ref of refs) {
+    let stream;
+    try { stream = page.doc.context.lookup(ref); } catch { continue; }
+    if (!stream?.getContents) continue;
+    let decoded;
+    try { decoded = decompressSync(stream.getContents()); } catch { continue; }
+    const text = new TextDecoder("latin1").decode(decoded);
+    // Tokenize operator-by-operator: Tm/Td move the text cursor, Tj/TJ show.
+    const tokenRe = /(-?[0-9.]+) (-?[0-9.]+) (-?[0-9.]+) (-?[0-9.]+) (-?[0-9.]+) (-?[0-9.]+) Tm|(-?[0-9.]+) (-?[0-9.]+) Td|<[0-9A-Fa-f]*> Tj|\[[^\]]*\] TJ/g;
+    let tx = 0;
+    let ty = 0;
+    let out = "";
+    let last = 0;
+    let match;
+    let changed = false;
+    while ((match = tokenRe.exec(text)) !== null) {
+      if (match[1] !== undefined) {
+        tx = Number(match[5]);
+        ty = Number(match[6]);
+      } else if (match[7] !== undefined) {
+        tx += Number(match[7]);
+        ty += Number(match[8]);
+      } else {
+        const inside = tx >= rect.x && tx <= rect.x + rect.width && ty >= rect.y && ty <= rect.y + rect.height;
+        if (inside) {
+          out += text.slice(last, match.index);
+          last = match.index + match[0].length;
+          removed += 1;
+          changed = true;
+          continue;
+        }
+      }
+    }
+    if (changed) {
+      out += text.slice(last);
+      stream.updateContents(zlibSync(new TextEncoder().encode(out)));
+    }
+  }
+  return removed;
+}
 
 export function createDocTools(host) {
   const outlineTool = {
@@ -721,7 +1077,7 @@ export function createDocTools(host) {
         const { totalPages, pages } = await pdfText(filePath);
         const summary = pages.slice(0, 20).map((text, index) => {
           const head = text.replace(/\s+/g, " ").trim().slice(0, 110);
-          return `стр. ${index + 1}: ${head || "(пусто)"}`;
+          return `стр. ${index + 1}: ${head || "(пусто — возможно скан без текстового слоя, OCR не поддерживается)"}`;
         });
         return {
           content: [{ type: "text", text: `PDF, страниц: ${totalPages}\n${summary.join("\n")}` }],
@@ -731,7 +1087,7 @@ export function createDocTools(host) {
 
       if (kind === "docx") {
         const blocks = await docxBlocks(filePath);
-        const headings = blocks.filter((block) => /^h[1-4]$/.test(block.type));
+        const headings = blocks.filter((block) => /^h[1-6]$/.test(block.type));
         const tables = blocks.filter((block) => block.type === "table");
         const text = blocks.map((block) => block.text ?? "").join("\n");
         const lines = [
@@ -744,10 +1100,20 @@ export function createDocTools(host) {
         };
       }
 
+      if (["xlsx", "ods", "csv", "rtf"].includes(kind)) {
+        const blocks = await sheetBlocks(filePath);
+        const tables = blocks.filter((block) => block.type === "table");
+        const preview = blocks.map((block) => block.type === "table" ? block.rows.map((row) => row.join(" | ")).join("\n") : block.text ?? "").join("\n").slice(0, 600);
+        return {
+          content: [{ type: "text", text: `${kind.toUpperCase()}, блоков: ${blocks.length}, таблиц: ${tables.length}\n${preview}` }],
+          details: { kind, blocks: blocks.length, tables: tables.length },
+        };
+      }
+
       const text = await plainText(filePath);
       const headings = text
         .split("\n")
-        .filter((line) => /^#{1,4}\s+/.test(line))
+        .filter((line) => /^#{1,6}\s+/.test(line))
         .slice(0, 30);
       return {
         content: [
@@ -814,6 +1180,17 @@ export function createDocTools(host) {
         };
       }
 
+      if (["xlsx", "ods", "csv", "rtf"].includes(kind)) {
+        const blocks = await sheetBlocks(filePath);
+        const from = Math.max(Number(params.from) || 1, 1);
+        const to = Math.min(Number(params.to) || from + 40, blocks.length);
+        const text = blocks.slice(from - 1, to)
+          .map((block, index) => block.type === "table" ? `[таблица ${from + index}]\n${block.rows.map((row) => row.join(" | ")).join("\n")}` : block.text ?? "")
+          .join("\n");
+        const clipped = clip(text, limit);
+        return { content: [{ type: "text", text: clipped.text }], details: { kind, from, to, total: blocks.length } };
+      }
+
       const text = await plainText(filePath);
       const clipped = clip(text, limit);
       return { content: [{ type: "text", text: clipped.text }], details: { kind, truncated: clipped.truncated } };
@@ -844,7 +1221,12 @@ export function createDocTools(host) {
                 label: `блок ${index + 1}`,
                 text: block.type === "table" ? block.rows.map((row) => row.join(" ")).join(" ") : block.text,
               }))
-            : [{ label: "файл", text: await plainText(filePath) }];
+            : ["xlsx", "ods", "csv", "rtf"].includes(kind)
+              ? (await sheetBlocks(filePath)).map((block, index) => ({
+                  label: `блок ${index + 1}`,
+                  text: block.type === "table" ? block.rows.map((row) => row.join(" ")).join(" ") : block.text,
+                }))
+              : [{ label: "файл", text: await plainText(filePath) }];
 
       const hits = [];
       for (const unit of units) {
@@ -918,12 +1300,33 @@ export function createDocTools(host) {
     },
   };
 
+// Version history: before every destructive edit/format, copy the original
+// to <file>.granka-versions/<timestamp>.<ext> (keeps the last 10) so a
+// document can always be rolled back next to itself.
+async function backupDocumentVersion(filePath) {
+  try {
+    const dir = `${filePath}.granka-versions`;
+    await fs.mkdir(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await fs.copyFile(filePath, path.join(dir, `${stamp}${path.extname(filePath)}`));
+    const versions = (await fs.readdir(dir)).sort();
+    for (const old of versions.slice(0, Math.max(0, versions.length - 10))) {
+      await fs.rm(path.join(dir, old), { force: true });
+    }
+    return dir;
+  } catch (err) {
+    console.error("[granka doc version]", err?.message ?? err);
+    return "";
+  }
+}
+
   const editTool = {
     name: "doc_edit",
     label: "Правка документа",
     description:
       "Точечные правки. DOCX: заменить текст (replace: обязательны find и replace), добавить абзацы/заголовок/таблицу в конец (append). " +
-      "PDF: добавить текст на страницу (add_text: нужны page/text/x/y), белую плашку (redact: page/x/y/width/height), новую страницу (add_page), вписать поля формы (fill_form: нужны fields), объединить файлы (merge: нужен source). " +
+      "PDF: добавить текст на страницу (add_text: нужны page/text/x/y), закрасить и удалить текст (redact: делается настоящим удалением из content stream + плашка), новую страницу (add_page), вписать поля формы (fill_form: нужны fields; поддерживаются текст, чекбокс, список, radio), объединить файлы (merge: source или sources), повернуть (rotate: degrees), удалить/извлечь/переставить страницы (delete_pages/extract_pages/reorder_pages: pages), разделить (split: at). " +
+      "Перед правкой оригинал сохраняется в <файл>.granka-versions/ — откат копированием обратно. " +
       "Для смены шрифтов и полей всего документа используй doc_format.",
     promptSnippet: "doc_edit: точечные правки DOCX/PDF",
     parameters: Type.Object({
@@ -939,6 +1342,11 @@ export function createDocTools(host) {
               Type.Literal("add_page"),
               Type.Literal("fill_form"),
               Type.Literal("merge"),
+              Type.Literal("rotate"),
+              Type.Literal("delete_pages"),
+              Type.Literal("extract_pages"),
+              Type.Literal("reorder_pages"),
+              Type.Literal("split"),
             ]),
             find: Type.Optional(Type.String()),
             replace: Type.Optional(Type.String()),
@@ -953,6 +1361,10 @@ export function createDocTools(host) {
             text: Type.Optional(Type.String()),
             fields: Type.Optional(Type.Record(Type.String(), Type.String())),
             source: Type.Optional(Type.String({ description: "Путь к PDF для merge" })),
+            sources: Type.Optional(Type.Array(Type.String())),
+            degrees: Type.Optional(Type.Number()),
+            pages: Type.Optional(Type.Array(Type.Number())),
+            at: Type.Optional(Type.Number()),
           }),
         ),
       ),
@@ -963,15 +1375,14 @@ export function createDocTools(host) {
       const kind = kindOf(filePath);
       const ops = params.ops ?? [];
       if (!ops.length) return { content: [{ type: "text", text: "Нет операций." }], details: {} };
+      const versionDir = await backupDocumentVersion(filePath);
       const log = [];
 
       if (kind === "docx") {
         for (const op of ops) {
           if (op.type === "replace") {
             if (!op.find) throw new Error("replace требует find");
-            await patchDocxXml(filePath, (xml) =>
-              xml.split(xmlEscape(op.find)).join(xmlEscape(op.replace ?? "")),
-            );
+            await patchDocxXml(filePath, (xml) => replaceAcrossRuns(xml, op.find, op.replace ?? ""));
             log.push(`заменено «${op.find}» → «${op.replace ?? ""}»`);
             continue;
           }
@@ -1013,14 +1424,14 @@ export function createDocTools(host) {
             dirty = true;
           } else if (op.type === "redact") {
             const page = doc.getPage(Math.min(Math.max((op.page ?? 1) - 1, 0), doc.getPageCount() - 1));
-            page.drawRectangle({
-              x: op.x ?? 40,
-              y: op.y ?? 40,
-              width: op.width ?? 200,
-              height: op.height ?? 16,
-              color: rgb(1, 1, 1),
-            });
-            log.push(`плашка на стр. ${op.page ?? 1}`);
+            const rect = { x: op.x ?? 40, y: op.y ?? 40, width: op.width ?? 200, height: op.height ?? 16 };
+            let removed = 0;
+            try {
+              removed = await redactPageText(page, rect, await import("@cantoo/pdf-lib"));
+            } catch (err) { console.error("[granka redact]", err?.message ?? err); }
+            // Opaque cover on top of whatever glyphs remain (e.g. vector text).
+            page.drawRectangle({ ...rect, color: rgb(1, 1, 1) });
+            log.push(`закрашено на стр. ${op.page ?? 1}: удалено текстовых блоков ${removed}`);
             dirty = true;
           } else if (op.type === "add_page") {
             if (doc.getPageCount() === 0) throw new Error("пустой PDF: не с чем взять размер страницы");
@@ -1031,31 +1442,64 @@ export function createDocTools(host) {
             const form = doc.getForm();
             const filled = [];
             for (const [field, value] of Object.entries(op.fields ?? {})) {
-              try {
-                form.getTextField(field).setText(value);
-                filled.push(field);
-              } catch {
-                try {
-                  form.getCheckBox(field).check();
-                  filled.push(field);
-                } catch {
-                  log.push(`поле не найдено: ${field}`);
-                }
-              }
+              const done = tryFillField(form, field, value);
+              if (done) filled.push(field);
+              else log.push(`поле не найдено: ${field}`);
             }
-            form.flatten();
+            // NOTE: no flatten() — the form stays editable after filling.
             log.push(`заполнено полей: ${filled.length}`);
             dirty = true;
+          } else if (op.type === "rotate") {
+            const { degrees } = await import("@cantoo/pdf-lib");
+            const page = doc.getPage(Math.min(Math.max((op.page ?? 1) - 1, 0), doc.getPageCount() - 1));
+            const current = page.getRotation().angle;
+            page.setRotation(degrees((current + (Number(op.degrees) || 90)) % 360));
+            log.push(`поворот стр. ${op.page ?? 1} на ${Number(op.degrees) || 90}°`);
+            dirty = true;
+          } else if (op.type === "delete_pages" || op.type === "extract_pages" || op.type === "reorder_pages") {
+            const count = doc.getPageCount();
+            const pagesIn = (op.pages ?? op.indices ?? []).map((p) => Number(p) - 1).filter((i) => i >= 0 && i < count);
+            if (!pagesIn.length) throw new Error(`${op.type}: нет действительных страниц`);
+            const keep = op.type === "delete_pages"
+              ? Array.from({ length: count }, (_v, i) => i).filter((i) => !pagesIn.includes(i))
+              : pagesIn;
+            if (!keep.length) throw new Error(`${op.type}: не останется страниц`);
+            if (keep.length > MAX_PAGES) throw new Error(`слишком много страниц: ${keep.length} (лимит ${MAX_PAGES})`);
+            const copied = await doc.copyPages(doc, keep);
+            for (let i = count - 1; i >= 0; i -= 1) doc.removePage(i);
+            copied.forEach((p) => doc.addPage(p));
+            log.push(`${op.type}: страниц теперь ${keep.length}`);
+            dirty = true;
+          } else if (op.type === "split") {
+            const count = doc.getPageCount();
+            const at = Math.min(Math.max(Number(op.at) || Math.floor(count / 2), 1), count - 1);
+            const first = await doc.copyPages(doc, Array.from({ length: at }, (_v, i) => i));
+            const second = await doc.copyPages(doc, Array.from({ length: count - at }, (_v, i) => at + i));
+            const outDir = path.dirname(filePath);
+            const base = path.basename(filePath, path.extname(filePath));
+            const part1 = path.join(outDir, `${base}-part1.pdf`);
+            const part2 = path.join(outDir, `${base}-part2.pdf`);
+            const doc1 = await PDFDocument.create();
+            first.forEach((p) => doc1.addPage(p));
+            await fs.writeFile(part1, Buffer.from(await doc1.save()));
+            const doc2 = await PDFDocument.create();
+            second.forEach((p) => doc2.addPage(p));
+            await fs.writeFile(part2, Buffer.from(await doc2.save()));
+            log.push(`разделено на ${part1} и ${part2}`);
+            dirty = true;
           } else if (op.type === "merge") {
-            if (!op.source) throw new Error("merge: не указан source");
-            const sourcePath = assertNotSensitive(host.resolve(op.source));
-            await ensureReadable(sourcePath);
-            if (kindOf(sourcePath) !== "pdf") throw new Error("merge: source должен быть PDF");
-            const extra = await PDFDocument.load(await fs.readFile(sourcePath));
-            if (doc.getPageCount() + extra.getPageCount() > MAX_PAGES) throw new Error(`merge: суммарно больше ${MAX_PAGES} страниц`);
-            const pages = await doc.copyPages(extra, extra.getPageIndices());
-            pages.forEach((page) => doc.addPage(page));
-            log.push(`добавлено страниц из ${op.source}: ${pages.length}`);
+            const sources = op.sources ?? (op.source ? [op.source] : []);
+            if (!sources.length) throw new Error("merge: не указан source/sources");
+            for (const source of sources) {
+              const sourcePath = assertNotSensitive(host.resolve(source));
+              await ensureReadable(sourcePath);
+              if (kindOf(sourcePath) !== "pdf") throw new Error("merge: source должен быть PDF");
+              const extra = await PDFDocument.load(await fs.readFile(sourcePath));
+              if (doc.getPageCount() + extra.getPageCount() > MAX_PAGES) throw new Error(`merge: суммарно больше ${MAX_PAGES} страниц`);
+              const pages = await doc.copyPages(extra, extra.getPageIndices());
+              pages.forEach((page) => doc.addPage(page));
+              log.push(`добавлено страниц из ${source}: ${pages.length}`);
+            }
             dirty = true;
           } else {
             log.push(`пропущено для PDF: ${op.type}`);
@@ -1101,6 +1545,7 @@ export function createDocTools(host) {
       await ensureReadable(filePath);
       const kind = kindOf(filePath);
       const style = styleOf(params.style);
+      await backupDocumentVersion(filePath);
 
       if (kind === "docx") {
         const blocks = await docxBlocks(filePath);

@@ -184,6 +184,7 @@ export function registerIpc({ openSettings } = {}) {
     }),
   );
   ipcMain.handle("attach:dataUrl", (_e, filePath) => agent.attachmentDataUrl(filePath));
+  ipcMain.handle("doc:preview", (_e, filePath) => agent.docPreview(filePath));
   ipcMain.handle("attach:image", (_e, payload) => agent.saveAttachmentImage(payload));
   ipcMain.handle("attach:text", (_e, payload) => agent.attachText(payload));
   ipcMain.handle("stats:get", () => agent.stats());
@@ -296,7 +297,7 @@ export function registerIpc({ openSettings } = {}) {
     const options = {
       properties: ["openFile", "multiSelections"],
       filters: [
-        { name: "Документы", extensions: ["pdf", "docx", "md", "txt", "html"] },
+        { name: "Документы", extensions: ["pdf", "docx", "md", "txt", "html", "xlsx", "ods", "csv", "rtf"] },
         { name: "Изображения", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
       ],
     };

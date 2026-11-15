@@ -2296,6 +2296,16 @@ function renderAttachments() {
       renderAttachments();
     });
     chip.append(name, kind, remove);
+    if (item.kind === "document") {
+      chip.classList.add("isPreviewable");
+      chip.title += " — клик: превью";
+      chip.addEventListener("click", async (event) => {
+        if (event.target.closest(".attachmentRemove")) return;
+        const preview = await granka.docPreview(item.path);
+        if (preview.ok) granka.openPreview({ html: preview.html, title: preview.title });
+        else fail(preview.error ?? "нет превью");
+      });
+    }
     box.append(chip);
   }
 }
