@@ -2,7 +2,68 @@
 // search/fetch and a one-level subagent. Everything runs in the main process,
 // uses no API keys and no paid services.
 import { Type } from "typebox";
+import fs from "node:fs";
+import path from "node:path";
 import { SUBAGENTS, SUBAGENT_IDS } from "./subagents.mjs";
+
+// ---------------------------------------------------------------- git (thin wrappers)
+// Frequent read-only git operations deserve real tools instead of the model
+// hand-writing `git diff` through bash every time. Fixed argv, no shell.
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+const execFileAsync = promisify(execFile);
+
+async function runGit(cwd, args) {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd,
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    return stdout.trim() || "(пусто)";
+  } catch (err) {
+    const stderr = String(err?.stderr ?? "").trim();
+    throw new Error(stderr || String(err?.message ?? err));
+  }
+}
+
+function createGitTools(host) {
+  const statusTool = {
+    name: "git_status",
+    label: "Git: статус",
+    description:
+      "Показывает состояние репозитория: ветку, изменённые и новые файлы (git status --short --branch). " +
+      "Используй перед правками и ревью вместо bash с git status.",
+    promptSnippet: "git_status: состояние репозитория",
+    parameters: Type.Object({}),
+    execute: async () => {
+      const text = await runGit(host.getCwd(), ["status", "--short", "--branch"]);
+      return { content: [{ type: "text", text }], details: {} };
+    },
+  };
+
+  const diffTool = {
+    name: "git_diff",
+    label: "Git: diff",
+    description:
+      "Показывает незакоммиченные изменения (git diff HEAD). Без пути — сводка по файлам (--stat), " +
+      "с путём — полный diff файла. Используй для ревью своих правок вместо bash.",
+    promptSnippet: "git_diff: незакоммиченные изменения",
+    parameters: Type.Object({
+      path: Type.Optional(Type.String({ description: "Путь к файлу для полного diff" })),
+    }),
+    execute: async (_id, params) => {
+      const args = params.path
+        ? ["diff", "--no-color", "HEAD", "--", String(params.path)]
+        : ["diff", "--no-color", "--stat", "HEAD"];
+      const text = await runGit(host.getCwd(), args);
+      return { content: [{ type: "text", text }], details: {} };
+    },
+  };
+
+  return { statusTool, diffTool };
+}
 
 // ---------------------------------------------------------------- web (free)
 
@@ -16,6 +77,36 @@ const BROWSER_HEADERS = {
   "accept-language": "en-US,en;q=0.9,ru;q=0.8",
 };
 const SEARCH_TIMEOUT = 8000;
+
+// SSRF guard: web_fetch/web_search must never reach loopback, RFC1918,
+// link-local (incl. cloud metadata 169.254.169.254) or .local hosts.
+// redirect:"follow" can bounce a public URL into the private range, so the
+// final response.url is re-checked by callers.
+function isPrivateHost(hostname) {
+  const host = String(hostname ?? "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host || host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) return true;
+  if (host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return true;
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  }
+  return false;
+}
+
+export function assertPublicUrl(raw) {
+  let url;
+  try { url = new URL(String(raw ?? "")); } catch { throw new Error(`недопустимый URL: ${raw}`); }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`разрешён только http(s): ${raw}`);
+  if (isPrivateHost(url.hostname)) throw new Error(`заблокирован приватный адрес: ${url.hostname}`);
+  return url;
+}
+
+const MAX_FETCH_BYTES = 2_000_000;
 
 async function getJson(url, timeout = SEARCH_TIMEOUT) {
   const controller = new AbortController();
@@ -135,6 +226,7 @@ async function ddgAbstract(query) {
 }
 
 async function searxSearch(query, baseUrl) {
+  assertPublicUrl(baseUrl);
   const url = `${baseUrl.replace(/\/$/, "")}/search?q=${encodeURIComponent(query)}&format=json`;
   const data = await getJson(url);
   return (data.results ?? []).slice(0, 8).map((item) => ({
@@ -180,6 +272,7 @@ export function htmlToText(html) {
 }
 
 async function fetchReadable(url, limit = 6000) {
+  assertPublicUrl(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
@@ -188,9 +281,12 @@ async function fetchReadable(url, limit = 6000) {
       signal: controller.signal,
       redirect: "follow",
     });
+    assertPublicUrl(response.url || url); // redirect target re-check
     if (!response.ok) return { ok: false, error: `HTTP ${response.status} для ${url}` };
     const type = response.headers.get("content-type") ?? "";
-    const raw = await response.text();
+    const declared = Number(response.headers.get("content-length") ?? 0);
+    if (declared > MAX_FETCH_BYTES) return { ok: false, error: `ответ слишком большой: ${url}` };
+    const raw = (await response.text()).slice(0, MAX_FETCH_BYTES);
     if (type.includes("json")) {
       return { ok: true, title: url, description: "", text: raw.slice(0, limit) };
     }
@@ -292,7 +388,8 @@ export function createGrankaTools(host) {
     name: "web_search",
     label: "Веб-поиск",
     description:
-      "Ищет в открытых источниках без ключей и аккаунтов: Википедия, GitHub, Hacker News, DuckDuckGo. " +
+      "Ищет в открытых источниках без ключей и аккаунтов: Википедия, Hacker News, DuckDuckGo" +
+      " (GitHub — без авторизации возможны rate-limit 429/403, при ошибке переключайся на DuckDuckGo). " +
       "Возвращает заголовки, ссылки и короткие описания. Для чтения страницы используй web_fetch.",
     promptSnippet: "web_search: найти страницы по запросу (без API-ключей)",
     parameters: Type.Object({
@@ -357,7 +454,9 @@ export function createGrankaTools(host) {
         return { content: [{ type: "text", text: "Нужен полный http(s) URL." }], details: {} };
       }
       const limit = Math.min(Math.max(Number(params.maxChars) || 6000, 500), 20000);
-      const page = await fetchReadable(url, limit);
+      let page;
+      try { page = await fetchReadable(url, limit); }
+      catch (err) { return { content: [{ type: "text", text: String(err?.message ?? err) }], details: {} }; }
       if (!page.ok) return { content: [{ type: "text", text: page.error }], details: {} };
       const text = [page.title, page.description, page.text].filter(Boolean).join("\n\n");
       return { content: [{ type: "text", text }], details: { url, title: page.title } };
@@ -414,6 +513,11 @@ export function createGrankaTools(host) {
         resourceLoader: loader,
         sessionManager: pi.SessionManager.inMemory(cwd),
         tools: definition.tools,
+        // Subagents always run on the parent dialog's model. Without an
+        // explicit model the SDK falls back to its provider default
+        // (moonshotai/kimi-k2.7-code for OpenRouter) — a paid model the user
+        // never chose, billed invisibly outside the parent's usage stats.
+        model: config.model ? runtime.getModel("openrouter", config.model) : undefined,
         thinkingLevel: definition.thinking ?? "low",
       });
       const child = created.session; // createAgentSession returns { session, ... }
@@ -421,6 +525,20 @@ export function createGrankaTools(host) {
       signal?.addEventListener?.("abort", abort);
       try {
         await child.prompt(`Задача: ${params.description}\n\n${params.prompt}`);
+        // Subagent spend must be visible: record it under the parent model so
+        // stats/budget account for it instead of billing invisibly.
+        try {
+          const last = [...(child.messages ?? [])].reverse().find((m) => m.role === "assistant");
+          const u = last?.usage;
+          if (u && host.recordUsage) {
+            host.recordUsage(child.sessionManager.getSessionId(), config.model, {
+              input: u.input,
+              output: u.output,
+              cacheRead: u.cacheRead,
+              cost: u.cost?.total ?? 0,
+            });
+          }
+        } catch (err) { console.error("[granka subagent usage]", err?.message ?? err); }
         const text = (child.getLastAssistantText() ?? "").slice(0, 5000);
         if (config.debugTools) {
           host.emit({ kind: "subagent", agent: definition.id, description: params.description, chars: text.length });
@@ -436,5 +554,55 @@ export function createGrankaTools(host) {
     },
   };
 
-  return { todoTool, askTool, webSearchTool, webFetchTool, subagentTool };
+  const repoMapTool = {
+    name: "repo_map",
+    label: "Карта проекта",
+    description:
+      "Строит компактную карту дерева проекта (до 300 файлов, без .git/node_modules). " +
+      "Используй в начале задачи, чтобы понять структуру, вместо ls/find по всему дереву.",
+    promptSnippet: "repo_map: карта дерева проекта",
+    parameters: Type.Object({
+      path: Type.Optional(Type.String({ description: "Подпапка, с которой начать (по умолчанию корень)" })),
+      maxDepth: Type.Optional(Type.Number({ description: "Глубина, по умолчанию 3" })),
+    }),
+    execute: async (_id, params) => {
+      const root = host.getCwd();
+      const start = params.path ? path.resolve(root, String(params.path)) : root;
+      const rel = path.relative(path.resolve(root), start);
+      if (rel.startsWith(`..${path.sep}`) || rel === ".." || path.isAbsolute(rel)) {
+        return { content: [{ type: "text", text: "путь вне рабочей папки" }], details: {} };
+      }
+      const maxDepth = Math.min(Math.max(Number(params.maxDepth) || 3, 1), 6);
+      const SKIP = new Set([".git", "node_modules", "dist", "build", ".venv", "__pycache__"]);
+      const lines = [];
+      let files = 0;
+      const walk = (dir, depth, prefix) => {
+        if (files > 300 || depth > maxDepth) return;
+        let entries = [];
+        try {
+          entries = fs.readdirSync(dir, { withFileTypes: true })
+            .filter((e) => !SKIP.has(e.name) && !e.name.startsWith("."))
+            .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
+        } catch (err) { console.error("[granka repo_map]", err?.message ?? err); return; }
+        for (const entry of entries) {
+          if (files > 300) break;
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            lines.push(`${prefix}${entry.name}/`);
+            walk(full, depth + 1, `${prefix}  `);
+          } else {
+            files += 1;
+            lines.push(`${prefix}${entry.name}`);
+          }
+        }
+      };
+      walk(start, 1, "");
+      const text = lines.join("\n") || "(пусто)";
+      return { content: [{ type: "text", text }], details: { files } };
+    },
+  };
+
+  const gitTools = createGitTools(host);
+
+  return { todoTool, askTool, webSearchTool, webFetchTool, subagentTool, repoMapTool, ...gitTools };
 }

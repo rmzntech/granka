@@ -1,6 +1,6 @@
 # Maintainer: granka
 pkgname=granka
-pkgver=0.3.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Desktop client for the Pi coding agent"
 arch=('x86_64' 'aarch64')
@@ -9,13 +9,15 @@ license=('MIT')
 depends=('electron' 'nodejs')
 options=('!strip')
 install=granka.install
-source=("granka-${pkgver}.tar.gz")
+source=("granka-${pkgver}.tar.zst")
 sha256sums=('SKIP')
 
 package() {
   # application files + production node_modules
+  # --reflink=auto: на btrfs копирование ~226 МБ занимает мгновения (CoW),
+  # на других ФС молча откатывается к обычному копированию.
   install -d "$pkgdir/usr/lib/granka"
-  cp -r "$srcdir/granka-${pkgver}/." "$pkgdir/usr/lib/granka/"
+  cp --reflink=auto -r "$srcdir/granka-${pkgver}/." "$pkgdir/usr/lib/granka/"
 
   # launcher
   install -Dm755 "$srcdir/granka-${pkgver}/packaging/arch/granka.sh" "$pkgdir/usr/bin/granka"

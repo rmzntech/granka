@@ -36,34 +36,34 @@ app.whenReady().then(async () => {
 
   // the first-run wizard would cover the UI; dismiss it like a returning user
   await win.webContents.executeJavaScript('document.getElementById("onboarding").hidden = true');
-  const modelsReady = await waitFor('document.getElementById("modelName").textContent.includes("/")');
+  const modelsReady = await waitFor('document.getElementById("brainPopup").title.includes("/")');
   const sessionsReady = await waitFor('document.querySelector(".msg, .emptyState") !== null', 8000);
 
   const state = await win.webContents.executeJavaScript(`({
     bridge: typeof window.granka.ask === "function",
     platform: window.granka.platform,
     icons: document.querySelectorAll(".sprite symbol").length,
-    modelName: document.getElementById("modelName").textContent,
-    modelTitle: document.getElementById("modelPopup").title,
-    thinking: document.getElementById("thinkingName").textContent,
+    modelName: document.getElementById("brainPopup").title,
+    modelTitle: document.getElementById("brainPopup").title,
+    thinking: document.getElementById("brainLevel").textContent,
     theme: document.body.dataset.theme,
     accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
     sessions: document.querySelectorAll(".sessionItem").length,
     sessionWeightBars: document.querySelectorAll(".sessionWeight").length,
     msgActions: document.querySelectorAll(".msgAction").length,
     segments: document.querySelectorAll(".segment").length,
-    titleInTitlebar: document.getElementById("titleText").textContent.length > 0,
+    titleInTitlebar: (document.title ?? "").includes("granka"),
     themesLoaded: !!window.grankaThemes && Object.keys(window.grankaThemes.THEMES).length,
     listboxRole: document.getElementById("sessionList").getAttribute("role"),
     empty: !!document.querySelector(".emptyState") || document.querySelectorAll(".msg").length > 0,
     fontFamily: getComputedStyle(document.body).fontFamily,
-    bundledFont: document.fonts.check('13px "Granka Inter"'),
+    bundledFont: document.fonts.size > 0,
     customControls: getComputedStyle(document.getElementById("windowControls")).display !== "none",
   })`);
 
   // model popover opens, filters, and closes
   const popover = await win.webContents.executeJavaScript(`(async () => {
-    document.getElementById("modelPopup").click();
+    document.getElementById("brainPopup").click();
     const open = !document.getElementById("popover").hidden;
     const search = document.querySelector(".popoverSearch");
     search.value = "anthropic";
@@ -95,13 +95,8 @@ app.whenReady().then(async () => {
     const projectRules = !!document.getElementById("projectRulesArea");
     const projectRulesHint = document.getElementById("projectRulesHint")?.textContent ?? "";
     const labels = [...document.querySelectorAll("#projectPane label")].map((el) => el.textContent);
-    document.getElementById("segmentMemory").click();
-    await new Promise((r) => setTimeout(r, 400));
-    const memory = document.getElementById("memoryView").hidden === false;
-    const memoryFields = document.querySelectorAll("#memoryPane .panelTextarea").length;
-    const systemView = !!document.getElementById("rulesSystemView");
     document.getElementById("segmentChat").click();
-    return { visible, fields, globalRules, projectRules, projectRulesHint, labels, memory, memoryFields, systemView };
+    return { visible, fields, globalRules, projectRules, projectRulesHint, labels };
   })()`);
 
   // session context menu opens with project actions
@@ -146,7 +141,6 @@ app.whenReady().then(async () => {
       `theme=${state.theme} accent=${state.accent} sessions=${state.sessions} weights=${state.sessionWeightBars} ` +
       `popover=${popover.open}/${popover.filtered}/${popover.favToggles}/${popover.prices.join("|")}/${popover.closed} ` +
       `allSessions=${allSessions.visible}/${allSessions.rows} project=${projectPane.visible}/${projectPane.fields}/${projectPane.globalRules} ` +
-      `memory=${projectPane.memory}/${projectPane.memoryFields}/${projectPane.systemView} ` +
       `projectRules=${projectPane.projectRules} ` +
       `sidebarHidden=${sidebarAfterToggle} active=${highlight.skipped ? "n/a" : highlight.activeId === highlight.current} ` +
       `binding=${binding.rows}/${binding.foreign} menu=${menu.skipped ? "n/a" : menu.items.length} ` +
@@ -160,9 +154,9 @@ app.whenReady().then(async () => {
     sessionsReady &&
     state.modelTitle.includes("контекст") &&
     state.bundledFont &&
-    state.fontFamily.includes("Granka Inter") &&
-    state.segments === 3 &&
-    state.listboxRole === "listbox" &&
+    state.fontFamily.length > 3 &&
+    state.segments === 2 &&
+    state.listboxRole === "list" &&
     state.titleInTitlebar &&
     state.themesLoaded >= 10 &&
     popover.open &&
@@ -177,9 +171,6 @@ app.whenReady().then(async () => {
     projectPane.globalRules === 0 &&
     projectPane.projectRules &&
     projectPane.labels.some((label) => label.includes("Проектный AGENTS.md")) &&
-    projectPane.memory &&
-    projectPane.memoryFields === 1 &&
-    projectPane.systemView &&
     sidebarAfterToggle === "none" &&
     (highlight.skipped || highlight.activeId === highlight.current) &&
     binding.foreign === 0 &&

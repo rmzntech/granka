@@ -7,6 +7,46 @@ function escapeHtml(text) {
   );
 }
 
+// Tiny safe highlighter for fenced code: input is already HTML-escaped, so
+// the tokenizer only wraps spans around keywords, strings, numbers and
+// comments without ever creating markup from the code itself.
+const KEYWORDS = [
+  "const", "let", "var", "function", "return", "if", "else", "for", "while", "do",
+  "switch", "case", "break", "continue", "new", "class", "extends", "import", "export",
+  "from", "default", "async", "await", "try", "catch", "finally", "throw", "typeof",
+  "instanceof", "in", "of", "void", "delete", "yield", "static", "this", "super",
+  "null", "undefined", "true", "false", "fn", "def", "print", "lambda", "pass",
+  "raise", "with", "as", "assert", "global", "nonlocal", "del", "is", "not", "and",
+  "or", "public", "private", "protected", "int", "float", "double", "char", "bool",
+  "interface", "enum", "impl", "struct", "trait", "match", "object", "val",
+  "constructor", "operator", "inline", "internal", "open", "abstract", "final",
+  "override", "suspend", "fun", "when", "data", "companion", "init", "lazy", "by",
+];
+
+function highlightCode(code) {
+  // Input comes from the already-escaped markdown text: do not escape again,
+  // just wrap token spans. Strings appear as &quot;...&quot; / &#39;...&#39;.
+  const escaped = code;
+  const tokenPattern = /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/|&quot;.*?&quot;|&#39;.*?&#39;|\b\d[\d_]*(?:\.\d+)?\b)/g;
+  const wordPattern = new RegExp("\\b(?:" + KEYWORDS.join("|") + ")\\b", "g");
+  const paintWords = (chunk, out) =>
+    out + chunk.replace(wordPattern, (word) => '<span class="tok-kw">' + word + "</span>");
+  let out = "";
+  let last = 0;
+  let match;
+  while ((match = tokenPattern.exec(escaped))) {
+    out = paintWords(escaped.slice(last, match.index), out);
+    const token = match[0];
+    let cls = "tok-kw";
+    if (token.startsWith("&quot;") || token.startsWith("&#39;")) cls = "tok-str";
+    else if (token.startsWith("//") || token.startsWith("#") || token.startsWith("/*")) cls = "tok-com";
+    else if (/^[0-9]/.test(token)) cls = "tok-num";
+    out += '<span class="' + cls + '">' + token + "</span>";
+    last = match.index + token.length;
+  }
+  return paintWords(escaped.slice(last), out);
+}
+
 function mdToHtml(source) {
   const stash = [];
   const keep = (html) => `\u0000${stash.push(html) - 1}\u0000`;
@@ -14,11 +54,15 @@ function mdToHtml(source) {
   let text = escapeHtml(source)
     .replace(
       /```[ \t]*(\w*)\n([\s\S]*?)```/g,
-      (_m, lang, code) => keep(`<pre><code class="lang-${lang}">${code.replace(/\n$/, "")}</code></pre>`),
+      (_m, lang, code) => keep(`<pre><code class="lang-${lang}">${highlightCode(code.replace(/\n$/, ""))}</code></pre>`),
     )
     .replace(/`([^`\n]+)`/g, (_m, code) => keep(`<code>${code}</code>`))
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    // Images first, before links eat the bracket part: http(s) only, plus
+    // small raster data: URLs (no SVG — XSS vector).
+    .replace(/!\[([^\]\n]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]{100,200000})\)/g, '<img src="$2" alt="$1" loading="lazy" />')
+    .replace(/!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g, '<img src="$2" alt="$1" loading="lazy" />')
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 
   const isTableRow = (line) => /^\s*\|?.+\|.*$/.test(line) && line.includes("|");
@@ -47,7 +91,7 @@ function mdToHtml(source) {
     const header = splitCells(headerLine);
     const aligns = alignmentsOf(separatorLine);
     const cell = (tag, content, index) => {
-      const align = aligns[index] ? ` style="text-align:${aligns[index]}"` : "";
+      const align = aligns[index] ? ` class="align-${aligns[index]}"` : "";
       return `<${tag}${align}>${content}</${tag}>`;
     };
     const head = `<thead><tr>${header.map((text, index) => cell("th", text, index)).join("")}</tr></thead>`;
@@ -89,7 +133,7 @@ function mdToHtml(source) {
       continue;
     }
 
-    const heading = /^(#{1,4})\s+(.*)$/.exec(lines[0]);
+    const heading = /^(#{1,6})\s+(.*)$/.exec(lines[0]);
     if (heading && lines.length === 1) {
       blocks.push(`<h${heading[1].length}>${heading[2]}</h${heading[1].length}>`);
       continue;

@@ -121,3 +121,9 @@ assert.ok(clipped.includes("дальше: doc_read"), "clip hint for continuatio
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("docs ok");
+
+// sensitive paths are never document targets
+import { assertNotSensitive } from "../electron/docs.mjs";
+assert.throws(() => assertNotSensitive(path.join(os.homedir(), ".granka", "auth.json")), /запрещено/);
+assert.throws(() => assertNotSensitive(path.join(os.homedir(), ".ssh", "id_rsa")), /запрещено/);
+assert.equal(assertNotSensitive("/tmp/some-doc.pdf"), "/tmp/some-doc.pdf");

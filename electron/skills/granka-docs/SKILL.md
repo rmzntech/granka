@@ -13,8 +13,6 @@ description: Работа с PDF и DOCX в granka через doc_outline/doc_re
    при обрезке будет подсказка `[дальше: doc_read(from=N)]`.
 3. `doc_search(path, query)` — найти фрагмент и узнать страницу.
 
-Не читай документ целиком ради одного абзаца и не вставляй его текст в ответ.
-
 ## Создание
 
 `doc_create({ path, content, style })`, где `content` — markdown-lite:

@@ -1,9 +1,50 @@
-import { app, BrowserWindow, Menu, nativeTheme } from "electron";
+import { app, BrowserWindow, Menu, Tray, dialog, nativeImage, nativeTheme, shell } from "electron";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import * as agent from "./agent.mjs";
 import { registerIpc } from "./ipc.mjs";
+import { getTrayState, resetUnread, setTrayListener } from "./tray-state.mjs";
 
-await agent.init(); // isolate ~/.granka before anything else touches pi
+// Single instance: a second process would race on ~/.granka files.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+// File log in ~/.granka/logs (console alone is lost on crash/quit).
+const LOG_FILE = path.join(os.homedir(), ".granka", "logs", "granka.log");
+function logLine(tag, value) {
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} [${tag}] ${value}\n`);
+  } catch {}
+}
+process.on("uncaughtException", (err) => logLine("uncaught", err?.stack ?? err));
+process.on("unhandledRejection", (err) => logLine("unhandled", err?.stack ?? err));
+
+// External links: https only, opened in the system browser, never in-app.
+function guardWindow(win) {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://")) shell.openExternal(url);
+    return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith("file://") || !url.includes("renderer")) {
+      event.preventDefault();
+      if (url.startsWith("https://")) shell.openExternal(url);
+    }
+  });
+}
+
 registerIpc({ openSettings: () => openSettings() });
 
 const isMac = process.platform === "darwin";
@@ -16,6 +57,51 @@ const preload = fileURLToPath(new URL("./preload.cjs", import.meta.url));
 
 let mainWindow;
 let settingsWindow;
+let tray;
+
+const trayIcon = (name) => nativeImage.createFromPath(fileURLToPath(new URL(`../build/icons/${name}.png`, import.meta.url)));
+
+// System tray: click focuses the window, a dot marks an active run, a badge
+// counts unseen completion notifications.
+function setupTray() {
+  if (tray || !mainWindow) return;
+  tray = new Tray(trayIcon("tray-idle"));
+  tray.setToolTip("granka");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: "Открыть окно",
+        click: () => {
+          mainWindow?.show();
+          mainWindow?.focus();
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Закрыть полностью",
+        click: () => app.quit(),
+      },
+    ]),
+  );
+  tray.on("click", () => {
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+  mainWindow.on("focus", () => {
+    resetUnread();
+  });
+}
+
+function refreshTrayIcon() {
+  if (!tray) return;
+  const { trayBusy, unreadNotifications } = getTrayState();
+  tray.setImage(trayIcon(unreadNotifications > 0 ? "tray-badge" : trayBusy ? "tray-dot" : "tray-idle"));
+  tray.setToolTip(
+    trayBusy ? "granka — агент работает" : unreadNotifications > 0 ? `granka — ${unreadNotifications} уведомлений` : "granka",
+  );
+}
+
+setTrayListener(refreshTrayIcon);
 
 const send = (channel) => {
   const win = BrowserWindow.getFocusedWindow() ?? mainWindow;
@@ -38,18 +124,20 @@ function createMainWindow() {
     titleBarStyle: isMac ? "hiddenInset" : undefined,
     trafficLightPosition: isMac ? { x: 14, y: 18 } : undefined,
     vibrancy: isMac ? "sidebar" : undefined,
-    webPreferences: { preload, contextIsolation: true },
+    webPreferences: { preload, contextIsolation: true, sandbox: true },
   });
   mainWindow.setMenuBarVisibility(!isMac);
+  guardWindow(mainWindow);
   mainWindow.on("closed", () => {
     mainWindow = undefined;
   });
   mainWindow.loadFile(renderer("index.html"));
 }
 
-function openSettings() {
+function openSettings(pane = "") {
   if (settingsWindow) {
     settingsWindow.focus();
+    if (pane) settingsWindow.webContents.send("settings:pane", pane);
     return;
   }
   settingsWindow = new BrowserWindow({
@@ -64,10 +152,14 @@ function openSettings() {
     frame: isMac,
     titleBarStyle: isMac ? "hiddenInset" : undefined,
     trafficLightPosition: isMac ? { x: 12, y: 12 } : undefined,
-    webPreferences: { preload, contextIsolation: true },
+    webPreferences: { preload, contextIsolation: true, sandbox: true },
   });
   settingsWindow.setMenuBarVisibility(false);
-  settingsWindow.once("ready-to-show", () => settingsWindow.show());
+  guardWindow(settingsWindow);
+  settingsWindow.once("ready-to-show", () => {
+    settingsWindow.show();
+    if (pane) settingsWindow.webContents.send("settings:pane", pane);
+  });
   settingsWindow.on("closed", () => {
     settingsWindow = undefined;
   });
@@ -82,7 +174,7 @@ Menu.setApplicationMenu(
       label: "Файл",
       submenu: [
         { label: "Новый диалог", accelerator: "CmdOrCtrl+N", click: () => send("menu:new-chat") },
-        { label: "Все сессии", accelerator: "CmdOrCtrl+Shift+S", click: () => send("menu:all-sessions") },
+        { label: "Все диалоги", accelerator: "CmdOrCtrl+Shift+S", click: () => send("menu:all-sessions") },
         { type: "separator" },
         { label: "Настройки…", accelerator: "CmdOrCtrl+,", click: openSettings },
         ...(isMac ? [] : [{ type: "separator" }, { role: "quit" }]),
@@ -108,7 +200,7 @@ Menu.setApplicationMenu(
 
 // Windows paints its own 1px frame around frameless windows: it follows the
 // system appearance, so keep nativeTheme in sync with the app theme.
-const LIGHT_THEMES = ["granka-light", "catppuccin-latte", "rose-pine-dawn", "nord-light", "gruvbox-light", "solarized-light"];
+const LIGHT_THEMES = ["granka-light", "claude", "nike", "cursor", "ibm", "opencode", "dell-1996", "apple"];
 
 function syncNativeTheme(config) {
   const pref = config?.theme ?? "auto";
@@ -119,13 +211,36 @@ function syncNativeTheme(config) {
   nativeTheme.themeSource = LIGHT_THEMES.includes(pref) ? "light" : "dark";
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  try {
+    await agent.init(); // isolate ~/.granka before anything else touches pi
+  } catch (err) {
+    console.error("[granka] init failed:", err);
+    dialog.showErrorBox("granka не запустился", `Не удалось инициализировать агент:\n${err?.message ?? err}`);
+    app.quit();
+    return;
+  }
   try {
     syncNativeTheme(agent.loadConfig());
-  } catch {}
+  } catch (err) {
+    console.error("[granka] theme sync:", err?.message ?? err);
+  }
   createMainWindow();
+  setupTray();
+  logLine("start", `granka ${app.getVersion()}`);
+});
+let shuttingDown = false;
+app.on("before-quit", async (event) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  event.preventDefault();
+  try { await agent.shutdown(); } catch (err) { logLine("shutdown", err?.message ?? err); }
+  app.quit();
 });
 app.on("window-all-closed", () => app.quit());
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createMainWindow();
+    setupTray();
+  }
 });

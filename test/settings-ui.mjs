@@ -33,7 +33,8 @@ app.whenReady().then(async () => {
   const state = await win.webContents.executeJavaScript(`({
     groups: document.querySelectorAll(".settingsPane").length,
     navItems: document.querySelectorAll(".navItem").length,
-    theme: document.querySelector("#themeSelect .selectLabel")?.textContent,
+    theme: document.querySelector(".themeCard[aria-pressed='true'] .themeName")?.textContent ?? "",
+    themeCards: document.querySelectorAll(".themeCard").length,
     dropdowns: document.querySelectorAll(".selectBtn").length,
     resolved: document.body.dataset.theme,
     secure: document.getElementById("apiKey").type,
@@ -61,9 +62,10 @@ app.whenReady().then(async () => {
     state.titlebar &&
     state.dropdowns >= 4 &&
     typeof state.theme === "string" && state.theme.length > 0 &&
-    state.navItems === 6 &&
-    state.groups === 6 &&
-    state.switches === 13 &&
+    state.navItems === 8 &&
+    state.groups === 8 &&
+    state.themeCards >= 15 &&
+    state.switches >= 13 &&
     state.prices.length === 3 &&
     state.modelGroups.length >= 2 &&
     state.keyCheck &&

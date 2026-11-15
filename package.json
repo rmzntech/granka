@@ -1,12 +1,12 @@
 {
   "name": "granka",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
     "start": "electron .",
-    "test": "node test/smoke.mjs && node test/markdown.mjs && node test/tools.mjs && node test/docs.mjs",
+    "test": "node test/smoke.mjs && node test/markdown.mjs && node test/tools.mjs && node test/docs.mjs && node test/themes.mjs && node test/css-tokens.mjs",
     "test:ui": "electron test/ui.mjs",
     "test:settings": "electron test/settings-ui.mjs",
     "test:all": "npm test && npm run test:ui && npm run test:settings && npm run test:theme",
@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@cantoo/pdf-lib": "^2.11.1",
-    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
     "@pdf-lib/fontkit": "^1.1.1",
     "docx": "^9.15.3",
     "fflate": "^0.8.3",
@@ -32,7 +32,7 @@
     "@google/genai@2.21.0": true,
     "protobufjs@7.6.6": true
   },
-  "description": "granka \u2014 desktop client for the Pi coding agent",
+  "description": "granka — desktop client for the Pi coding agent",
   "build": {
     "appId": "dev.granka.app",
     "productName": "granka",

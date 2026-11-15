@@ -1,5 +1,5 @@
-// Regression test for "theme changed only in settings": saving a theme in the
-// settings window must reach the main window through config:changed.
+// Regression test for "theme changed only in settings": picking a theme card
+// in the settings window must reach the main window through config:changed.
 import { app, BrowserWindow } from "electron";
 import { fileURLToPath } from "node:url";
 import * as agent from "../electron/agent.mjs";
@@ -30,13 +30,12 @@ app.whenReady().then(async () => {
   const before = await main.webContents.executeJavaScript("document.body.dataset.themeId");
 
   await settings.webContents.executeJavaScript(`(async () => {
-    document.querySelector('[data-pane="appearance"]').click();
-    document.querySelector("#themeSelect .selectBtn").click();
+    document.querySelector('[data-pane="themes"]').click();
     await new Promise((r) => setTimeout(r, 200));
-    const item = [...document.querySelectorAll(".selectPanel .selectItem")]
-      .find((el) => el.textContent.includes("Tokyo Night"));
-    if (!item) throw new Error("Tokyo Night не найден в списке тем");
-    item.click();
+    const card = [...document.querySelectorAll(".themeCard")]
+      .find((el) => el.textContent.includes("Spotify"));
+    if (!card) throw new Error("карточка Spotify не найдена");
+    card.click();
     return true;
   })()`);
   await wait(1200);
@@ -49,7 +48,7 @@ app.whenReady().then(async () => {
   await agent.applyConfig({ theme: originalTheme });
 
   console.log(`before=${before} after=${after} saved=${saved} settingsMode=${settingsTheme} errors=${errors.length}`);
-  const ok = after === "tokyo-night" && saved === "tokyo-night" && settingsTheme === "dark" && errors.length === 0;
+  const ok = after === "spotify" && saved === "spotify" && settingsTheme === "dark" && errors.length === 0;
   if (!ok) console.error("theme broadcast failed");
   else console.log("theme broadcast ok");
   app.exit(ok ? 0 : 1);

@@ -38,11 +38,6 @@ const offOnly = models.filter((m) => m.levels.length === 1 && m.levels[0] === "o
 assert.ok(restricted.length > 0, "some models must expose a restricted level set");
 assert.ok(offOnly.length > 0, "non-reasoning models must be limited to off");
 
-// rules files are readable and never null
-const rules = agent.getRules();
-assert.equal(typeof rules.system, "string");
-assert.equal(typeof rules.agents, "string");
-
 // slash-command catalog is an array of { name, description }
 assert.ok(Array.isArray(agent.listPrompts()));
 for (const prompt of agent.listPrompts()) {
@@ -50,7 +45,7 @@ for (const prompt of agent.listPrompts()) {
   assert.equal(typeof prompt.description, "string");
 }
 assert.ok(Array.isArray(agent.listSkills()));
-console.log(`rules: system=${rules.system.length}b agents=${rules.agents.length}b, prompts=${agent.listPrompts().length}, skills=${agent.listSkills().length}`);
+console.log(`prompts=${agent.listPrompts().length}, skills=${agent.listSkills().length}`);
 
 // prompt/skill discovery parses real files (created and removed here)
 import fs from "node:fs";

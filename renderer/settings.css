@@ -54,7 +54,7 @@ body[data-mac="true"] #windowControls {
   height: var(--control);
   padding: 0 10px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-ctl);
   background: none;
   color: var(--text-2);
   font: inherit;
@@ -70,7 +70,6 @@ body[data-mac="true"] #windowControls {
 .navItem.isActive {
   background: var(--row-active);
   color: var(--text);
-  font-weight: 500;
 }
 
 #settingsPanes {
@@ -91,15 +90,19 @@ body[data-mac="true"] #windowControls {
 
 .settingsPane h2 {
   margin: 0 0 12px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-2);
 }
 
+.settingsSubhead {
+  margin-top: 24px !important;
+}
+
 .field {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .modelList {
@@ -126,7 +129,7 @@ body[data-mac="true"] #windowControls {
 }
 
 .settingsStatus {
-  font-size: 12px;
+  font-size: var(--fs-md);
   color: var(--text-2);
 }
 
@@ -164,7 +167,7 @@ body[data-mac="true"] #windowControls {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--accent-text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   transition: transform var(--dur) var(--ease);
 }
@@ -183,13 +186,13 @@ body[data-mac="true"] #windowControls {
 }
 
 .switchText {
-  font-size: 12.5px;
+  font-size: var(--fs-md);
   line-height: 1.4;
 }
 
 .switchText small {
   display: block;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 
@@ -205,21 +208,124 @@ body[data-mac="true"] #windowControls {
   gap: 2px;
   padding: 8px 10px;
   border: var(--hair) solid var(--separator);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-ctl);
   background: var(--fill);
 }
 
 .subagentRow b {
-  font-size: 12px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .subagentRow span {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 
 .subagentRow code {
   font: 11px / 1.3 var(--mono);
   color: var(--text-2);
+}
+
+/* ---------------- theme cards ---------------- */
+
+.themeGroupTitle {
+  margin: 16px 0 8px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.themeGroupTitle:first-child {
+  margin-top: 4px;
+}
+
+.themeGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.themeCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: var(--hair) solid var(--separator);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.themeCard:hover {
+  border-color: var(--text-2);
+}
+
+.themeCard[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.themeSwatch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 10px;
+  border: var(--hair) solid var(--separator);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.themeSample {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.themeAccent {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+}
+
+.themeCode {
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  font: var(--fs-sm) / 1.4 var(--mono);
+}
+
+.themeName {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.themeCheck {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.themeCheck .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.themeCard[aria-pressed="true"] .themeCheck {
+  display: grid;
 }

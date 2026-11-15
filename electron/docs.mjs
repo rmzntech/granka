@@ -2,11 +2,70 @@
 // (unpdf, @cantoo/pdf-lib, mammoth, docx, fflate). No native binaries, no
 // services, works the same on Linux, macOS and Windows.
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Type } from "typebox";
 
-const READ_CHARS = 8000;      // per read call, keeps tool output out of context bloat
+// Single source of truth for tool-output size: the same toolOutputLimit the
+// agent applies globally (agent.mjs clip). Previously doc_read defaulted to
+// 8000+ while the global clip cut everything to 4000 — the tool promised
+// more than the model ever saw.
+function toolOutputLimit() {
+  try {
+    const cfg = JSON.parse(fsSync.readFileSync(path.join(os.homedir(), ".granka", "granka.json"), "utf8"));
+    const n = Number(cfg.toolOutputLimit);
+    if (Number.isFinite(n) && n >= 500 && n <= 20000) return n;
+  } catch (err) { console.error("[granka docs]", err?.message ?? err); }
+  return 4000;
+}
+
 const SEARCH_HITS = 12;
+
+// Input caps: a single document must not OOM the main process.
+const MAX_DOC_BYTES = 25 * 1024 * 1024;
+const MAX_PAGES = 500;
+
+// Parsed-document cache keyed by path, invalidated by mtime+size+ctime.
+const docCache = new Map();
+const DOC_CACHE_MAX = 20;
+function cacheGet(key, stat) {
+  const hit = docCache.get(key);
+  if (!hit) return null;
+  if (hit.mtimeMs !== stat.mtimeMs || hit.size !== stat.size || hit.ctimeMs !== stat.ctimeMs) {
+    docCache.delete(key);
+    return null;
+  }
+  docCache.delete(key);
+  docCache.set(key, hit); // LRU refresh
+  return hit.value;
+}
+function cacheSet(key, stat, value) {
+  docCache.set(key, { mtimeMs: stat.mtimeMs, size: stat.size, ctimeMs: stat.ctimeMs, value });
+  while (docCache.size > DOC_CACHE_MAX) docCache.delete(docCache.keys().next().value);
+}
+
+// Secrets and granka's own home are never document-tool targets.
+export function assertNotSensitive(filePath) {
+  const resolved = path.resolve(String(filePath));
+  const home = os.homedir();
+  const sensitive = [
+    path.join(home, ".granka"),
+    path.join(home, ".ssh"),
+    path.join(home, ".gnupg"),
+    path.join(home, ".aws"),
+    path.join(home, ".config", "gcloud"),
+  ];
+  for (const dir of sensitive) {
+    if (resolved === dir || resolved.startsWith(dir + path.sep)) {
+      throw new Error(`запрещено: ${filePath} (чувствительный путь)`);
+    }
+  }
+  if (/(^|[\/\\])(auth\.json|id_rsa|id_ed25519|\.env)$/.test(resolved)) {
+    throw new Error(`запрещено: ${filePath} (чувствительный файл)`);
+  }
+  return resolved;
+}
 
 const PAGE_SIZES = {
   a4: [595.28, 841.89],
@@ -76,25 +135,55 @@ function kindOf(filePath) {
 }
 
 async function ensureReadable(filePath) {
+  assertNotSensitive(filePath);
   try {
     const stat = await fs.stat(filePath);
     if (!stat.isFile()) throw new Error("не файл");
+    if (stat.size > MAX_DOC_BYTES) throw new Error(`файл слишком большой: ${Math.round(stat.size / 1024 / 1024)} МБ (лимит ${MAX_DOC_BYTES / 1024 / 1024} МБ)`);
     return stat;
-  } catch {
+  } catch (err) {
+    if (err?.message?.startsWith("запрещено") || err?.message?.startsWith("файл слишком")) throw err;
     throw new Error(`файл не найден или недоступен: ${filePath}`);
   }
 }
 
-function clip(text, limit = READ_CHARS) {
+function clip(text, limit = toolOutputLimit()) {
   return { text: text.slice(0, limit), truncated: text.length > limit };
 }
 
-async function pdfText(filePath) {
+async function pdfText(filePath, stat) {
+  stat = stat ?? (await ensureReadable(filePath));
+  const cached = cacheGet(filePath, stat);
+  if (cached) return cached;
   const { getDocumentProxy, extractText } = await import("unpdf");
   const buffer = await fs.readFile(filePath);
   const pdf = await getDocumentProxy(new Uint8Array(buffer));
   const { totalPages, text } = await extractText(pdf, { mergePages: false });
-  return { totalPages, pages: text.map((page) => String(page ?? "")) };
+  if (totalPages > MAX_PAGES) throw new Error(`слишком много страниц: ${totalPages} (лимит ${MAX_PAGES})`);
+  const result = { totalPages, pages: text.map((page) => String(page ?? "")) };
+  cacheSet(filePath, stat, result);
+  return result;
+}
+
+// Cheap metadata for attachments: page/block counts shown in the chip so
+// the user sees what they attached without opening the file.
+export async function docInfo(filePath) {
+  try {
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === ".pdf") {
+      const { totalPages } = await pdfText(filePath);
+      return { pages: totalPages };
+    }
+    if (ext === ".docx") {
+      const blocks = await docxBlocks(filePath);
+      return { blocks: blocks.length };
+    }
+    if ([".md", ".txt", ".html", ".htm"].includes(ext)) {
+      const text = await fs.readFile(filePath, "utf8").catch(() => "");
+      return { lines: text.split("\n").length };
+    }
+  } catch (err) { console.error("[granka docInfo]", err?.message ?? err); }
+  return {};
 }
 
 function decodeEntities(text) {
@@ -109,28 +198,43 @@ function decodeEntities(text) {
 
 function htmlToBlocks(html) {
   const blocks = [];
+  const hasImages = /<img\b/i.test(html);
   const pattern = /<(h[1-6]|p|li|tr)[^>]*>([\s\S]*?)<\/\1>/gi;
   let match;
   while ((match = pattern.exec(html))) {
     const tag = match[1].toLowerCase();
-    const raw = match[2]
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<[^>]+>/g, "")
-      .trim();
+    let raw;
+    let cells = null;
+    if (tag === "tr") {
+      // Split by real cells (td/th) instead of guessing on whitespace.
+      const cellMatches = [...match[2].matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)];
+      if (cellMatches.length) {
+        cells = cellMatches.map((c) => decodeEntities(c[1].replace(/<br\s*\/?>/gi, " ").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim()));
+        raw = cells.join("\t");
+      } else {
+        raw = match[2].replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
+      }
+    } else {
+      raw = match[2].replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
+    }
     const text = decodeEntities(raw);
     if (!text) continue;
     if (tag === "h1") blocks.push({ type: "h1", text });
     else if (tag === "h2") blocks.push({ type: "h2", text });
     else if (tag === "h3") blocks.push({ type: "h3", text });
-    else if (/^h[4-6]$/.test(tag)) blocks.push({ type: "h4", text });
+    else if (/^h[4-6]$/.test(tag)) blocks.push({ type: tag, text });
     else if (tag === "li") blocks.push({ type: "li", text });
-    else if (tag === "tr") blocks.push({ type: "tableRow", text });
+    else if (tag === "tr") blocks.push({ type: "tableRow", text, cells });
     else blocks.push({ type: "p", text });
   }
+  if (hasImages) blocks.push({ type: "note", text: "⚠ в документе есть картинки: они не переносятся в текстовые блоки" });
   return blocks;
 }
 
-async function docxBlocks(filePath) {
+async function docxBlocks(filePath, stat) {
+  stat = stat ?? (await ensureReadable(filePath));
+  const cached = cacheGet(filePath, stat);
+  if (cached) return cached;
   const mammoth = (await import("mammoth")).default;
   const { value: html } = await mammoth.convertToHtml({ path: filePath });
   const blocks = htmlToBlocks(html);
@@ -139,7 +243,7 @@ async function docxBlocks(filePath) {
   let table = null;
   for (const block of blocks) {
     if (block.type === "tableRow") {
-      const cells = block.text.split(/\s{2,}|\t/).filter(Boolean);
+      const cells = block.cells ?? block.text.split(/\s{2,}|\t/).filter(Boolean);
       if (!table) table = { type: "table", rows: [] };
       table.rows.push(cells);
       continue;
@@ -151,6 +255,7 @@ async function docxBlocks(filePath) {
     merged.push(block);
   }
   if (table) merged.push(table);
+  cacheSet(filePath, stat, merged);
   return merged;
 }
 
@@ -667,13 +772,13 @@ export function createDocTools(host) {
       path: Type.String({ description: "Путь к файлу" }),
       from: Type.Optional(Type.Number({ description: "Начальная страница (PDF) или блок (DOCX), с 1" })),
       to: Type.Optional(Type.Number({ description: "Конечная страница/блок включительно" })),
-      limit: Type.Optional(Type.Number({ description: "Лимит символов, по умолчанию 8000" })),
+      limit: Type.Optional(Type.Number({ description: "Лимит символов; по умолчанию — лимит вывода инструментов из настроек" })),
     }),
     execute: async (_id, params) => {
       const filePath = path.resolve(host.resolve(params.path));
       await ensureReadable(filePath);
       const kind = kindOf(filePath);
-      const limit = Math.min(Math.max(Number(params.limit) || READ_CHARS, 500), 24000);
+      const limit = Math.min(Math.max(Number(params.limit) || toolOutputLimit(), 500), 24000);
 
       if (kind === "pdf") {
         const { totalPages, pages } = await pdfText(filePath);
@@ -817,8 +922,8 @@ export function createDocTools(host) {
     name: "doc_edit",
     label: "Правка документа",
     description:
-      "Точечные правки. DOCX: заменить текст, добавить абзацы/заголовок/таблицу в конец. " +
-      "PDF: добавить текст на страницу, белую плашку (redact), новую страницу, вписать поля формы, объединить файлы. " +
+      "Точечные правки. DOCX: заменить текст (replace: обязательны find и replace), добавить абзацы/заголовок/таблицу в конец (append). " +
+      "PDF: добавить текст на страницу (add_text: нужны page/text/x/y), белую плашку (redact: page/x/y/width/height), новую страницу (add_page), вписать поля формы (fill_form: нужны fields), объединить файлы (merge: нужен source). " +
       "Для смены шрифтов и полей всего документа используй doc_format.",
     promptSnippet: "doc_edit: точечные правки DOCX/PDF",
     parameters: Type.Object({
@@ -918,6 +1023,7 @@ export function createDocTools(host) {
             log.push(`плашка на стр. ${op.page ?? 1}`);
             dirty = true;
           } else if (op.type === "add_page") {
+            if (doc.getPageCount() === 0) throw new Error("пустой PDF: не с чем взять размер страницы");
             doc.addPage([doc.getPage(0).getWidth(), doc.getPage(0).getHeight()]);
             log.push("добавлена страница");
             dirty = true;
@@ -941,7 +1047,12 @@ export function createDocTools(host) {
             log.push(`заполнено полей: ${filled.length}`);
             dirty = true;
           } else if (op.type === "merge") {
-            const extra = await PDFDocument.load(await fs.readFile(host.resolve(op.source)));
+            if (!op.source) throw new Error("merge: не указан source");
+            const sourcePath = assertNotSensitive(host.resolve(op.source));
+            await ensureReadable(sourcePath);
+            if (kindOf(sourcePath) !== "pdf") throw new Error("merge: source должен быть PDF");
+            const extra = await PDFDocument.load(await fs.readFile(sourcePath));
+            if (doc.getPageCount() + extra.getPageCount() > MAX_PAGES) throw new Error(`merge: суммарно больше ${MAX_PAGES} страниц`);
             const pages = await doc.copyPages(extra, extra.getPageIndices());
             pages.forEach((page) => doc.addPage(page));
             log.push(`добавлено страниц из ${op.source}: ${pages.length}`);

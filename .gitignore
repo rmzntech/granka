@@ -6,6 +6,7 @@ out/
 packaging/arch/pkg/
 packaging/arch/src/
 packaging/arch/*.tar.gz
+packaging/arch/*.tar.zst
 *.AppImage
 *.deb
 .DS_Store

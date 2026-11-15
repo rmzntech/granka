@@ -3,10 +3,15 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { syncSystemPrompt } from "./prompt-template.mjs";
 import { createGrankaTools } from "./tools.mjs";
-import { createDocTools } from "./docs.mjs";
+import { createDocTools, assertNotSensitive } from "./docs.mjs";
+import { writeFileAtomic } from "./atomic-write.mjs";
+import { MODEL_LEVELS, acceptsText, textOf, usageOf } from "./agent-utils.mjs";
+
+export { acceptsText };
 
 export const AGENT_DIR = path.join(os.homedir(), ".granka");
 export const SESSION_DIR = path.join(AGENT_DIR, "sessions");
@@ -37,14 +42,23 @@ const DEFAULT_CONFIG = {
   toolAsk: true,
   toolWeb: true,
   toolSubagents: true,
+  toolGit: true,
+  planMode: false,
+  agentMode: "chat", // chat | plan | auto | debug (Claude Code style permission modes)
+  confirmBashWrite: "ask", // ask = confirm bash/write/edit/doc writes; allow = always allow
+  toolDisplay: "live",
+  hooks: {}, // { toolName: "shell command after the tool finishes" }
+  dailyBudgetUsd: 0, // 0 = off; warn in chat when today's spend passes this
+  mcpServers: {}, // { name: { command, args, env } } — stdio MCP servers
+  mcpEnabled: true, // master switch: off = no MCP process ever starts
   searxUrl: "",
   debugTools: false,
   toolDocs: true,
   compactionEnabled: true,
   compactionReserve: 16384,
   attachMaxMb: 25,
-  uiFont: "inter",
-  codeFont: "system",
+  uiFont: "theme",
+  codeFont: "theme",
   cacheRetentionLong: true,
   toolOutputLimit: 4000,
   pinnedSessions: [],
@@ -61,6 +75,9 @@ let appliedKey;
 let sessionsById = new Map();
 let pending = { kind: "recent" }; // recent | new | open
 let uiBridge = { askUser: async () => "", emit: () => {} };
+// Tools the user has confirmed for the current session ("always allow" in
+// the confirmation dialog). Cleared with the session.
+const sessionConfirmedTools = new Set();
 
 // The renderer answers structured questions and receives tool notices.
 export function setUiBridge(bridge) {
@@ -80,7 +97,7 @@ export async function init() {
   pi = await import("@earendil-works/pi-coding-agent");
 }
 
-const CONFIG_VERSION = 5;
+const CONFIG_VERSION = 6;
 
 // MEMORY.md duplicated AGENTS.md: same file appended to the same prompt.
 // Content is merged once and the old file is kept as a backup.
@@ -94,7 +111,7 @@ function migrateMemoryIntoRules() {
       fs.writeFileSync(AGENT_RULES_FILE, merged);
     }
     fs.renameSync(MEMORY_FILE, `${MEMORY_FILE}.bak`);
-  } catch {}
+  } catch (err) { console.error("[granka]", err?.message ?? err); }
 }
 
 function readProjectMap() {
@@ -108,7 +125,7 @@ function readProjectMap() {
 
 function writeProjectMap(map) {
   fs.mkdirSync(AGENT_DIR, { recursive: true });
-  fs.writeFileSync(PROJECTS_MAP_FILE, JSON.stringify(map, null, 2) + "\n");
+  writeFileAtomic(PROJECTS_MAP_FILE, JSON.stringify(map, null, 2) + "\n");
 }
 
 export function projectOfSession(sessionId) {
@@ -168,20 +185,36 @@ export function loadConfig() {
       if (!saved.configVersion || saved.configVersion < 5) {
         if (!saved.uiFont || saved.uiFont === "system") cfg.uiFont = "inter";
       }
+      // v6: themes own the typeface again — a fixed uiFont made every brand
+      // theme (Dell serif, OpenCode mono, IBM Plex) look identical.
+      if (!saved.configVersion || saved.configVersion < 6) {
+        cfg.uiFont = "theme";
+        cfg.codeFont = "theme";
+      }
       delete cfg.styleMode;
       delete cfg.styleLevel;
       cfg.configVersion = CONFIG_VERSION;
       saveConfig(cfg);
     }
     return cfg;
-  } catch {
+  } catch (err) {
+    // A missing file is normal on first run; a corrupt one is not — back it
+    // up instead of silently falling back to defaults and losing settings.
+    if (fs.existsSync(CONFIG_FILE)) {
+      console.error("[granka] config unreadable, backing up:", err?.message ?? err);
+      try {
+        fs.copyFileSync(CONFIG_FILE, `${CONFIG_FILE}.bak-${Date.now()}`);
+      } catch (backupErr) {
+        console.error("[granka] config backup failed:", backupErr?.message ?? backupErr);
+      }
+    }
     return { ...DEFAULT_CONFIG };
   }
 }
 
 function saveConfig(cfg) {
   fs.mkdirSync(AGENT_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  writeFileAtomic(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
 }
 
 async function getRuntime() {
@@ -194,19 +227,34 @@ async function getRuntime() {
   return runtime;
 }
 
+// The runtime key is a non-persistent overlay: granka.json is the source of
+// truth, the runtime is re-synced from it. Never trust the appliedKey cache
+// alone — if the runtime lost its credential (recreated runtime, failed
+// write), appliedKey would keep the stale value and every request would
+// fail with a login error until restart. Heal by checking the runtime.
 async function syncKey(rt, cfg) {
-  if (cfg.apiKey && cfg.apiKey !== appliedKey) {
-    await rt.setRuntimeApiKey("openrouter", cfg.apiKey);
-    appliedKey = cfg.apiKey;
+  const key = String(cfg.apiKey ?? "").trim();
+  if (!key) {
+    if (appliedKey) {
+      try { await rt.removeRuntimeApiKey("openrouter"); } catch (err) { console.error("[granka]", err?.message ?? err); }
+      appliedKey = "";
+    }
+    return;
+  }
+  const runtimeHasAuth = typeof rt.hasConfiguredAuth === "function"
+    ? rt.hasConfiguredAuth("openrouter")
+    : true;
+  if (key === appliedKey && runtimeHasAuth) return;
+  try {
+    await rt.setRuntimeApiKey("openrouter", key);
+    appliedKey = key;
+  } catch (err) {
+    appliedKey = ""; // force a retry on the next sync instead of caching the failure
+    throw err;
   }
 }
 
-const MODEL_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-// Only chat models that take text input (the catalog also carries image and
-// classifier models, which cannot answer a chat prompt).
-export const acceptsText = (model) =>
-  (model.type ?? "chat") === "chat" && Array.isArray(model.input) && model.input.includes("text");
+// (MODEL_LEVELS/acceptsText/textOf/usageOf live in agent-utils.mjs)
 
 // Catalog with the thinking levels each model actually supports: `thinkingLevelMap`
 // marks a level as unsupported with null, non-reasoning models only have "off".
@@ -231,22 +279,89 @@ export async function listModels() {
 }
 
 // Save settings from the UI and apply them to the live session.
-export async function applyConfig(patch) {
+// Config saves are serialized: settings debounces keystrokes into saveConfig
+// calls, and two concurrent applyConfig runs can otherwise interleave
+// load→save and persist a stale/partial value (e.g. half-typed API key).
+let configQueue = Promise.resolve();
+
+export function applyConfig(patch) {
+  const run = configQueue.then(() => applyConfigNow(patch));
+  configQueue = run.catch(() => {});
+  return run;
+}
+
+// IPC arguments are untrusted: only these keys may ever be written via
+// config:save. `projects`/`configVersion` are owned by their own handlers.
+const CONFIG_WHITELIST = new Set([
+  "apiKey", "model", "thinkingLevel", "theme", "cwd", "favorites", "activeProject",
+  "fontSize", "accentSystem", "showUsage", "sendOnEnter", "autoScroll", "osNotifications",
+  "continueLast", "toolTodo", "toolAsk", "toolWeb", "toolSubagents", "toolGit", "toolDocs",
+  "planMode", "agentMode", "confirmBashWrite", "toolDisplay", "thinkingDisplay", "hooks", "dailyBudgetUsd",
+  "mcpServers", "mcpEnabled", "searxUrl", "debugTools", "compactionEnabled",
+  "compactionReserve", "attachMaxMb", "uiFont", "codeFont", "cacheRetentionLong",
+  "toolOutputLimit", "pinnedSessions", "sessionSort", "density", "onboarded", "autoTitle",
+]);
+
+function sanitizeConfigPatch(patch) {
+  const clean = {};
+  for (const [key, value] of Object.entries(patch && typeof patch === "object" ? patch : {})) {
+    if (CONFIG_WHITELIST.has(key)) clean[key] = value;
+  }
+  // hooks/mcpServers are shell commands by design (user-owned settings):
+  // validate their shape so a stray patch cannot smuggle arbitrary types.
+  if (clean.hooks !== undefined) {
+    if (!clean.hooks || typeof clean.hooks !== "object" || Array.isArray(clean.hooks)) return null;
+    for (const v of Object.values(clean.hooks)) if (typeof v !== "string") return null;
+  }
+  if (clean.mcpServers !== undefined) {
+    if (!clean.mcpServers || typeof clean.mcpServers !== "object" || Array.isArray(clean.mcpServers)) return null;
+    for (const s of Object.values(clean.mcpServers)) {
+      if (!s || typeof s !== "object" || typeof s.command !== "string" || !s.command) return null;
+      if (s.args !== undefined && !Array.isArray(s.args)) return null;
+      if (s.env !== undefined && (typeof s.env !== "object" || Array.isArray(s.env))) return null;
+    }
+  }
+  return clean;
+}
+
+export { sanitizeConfigPatch };
+
+async function applyConfigNow(patch) {
   try {
     const before = loadConfig();
-    const cfg = { ...before, ...patch };
-    saveConfig(cfg);
+    const clean = sanitizeConfigPatch(patch);
+    if (clean === null) return { ok: false, error: "недопустимый формат настроек (hooks/mcpServers)" };
+    const cfg = { ...before, ...clean };
     const rt = await getRuntime();
+    // Validate before persisting: a rejected patch must not reach the disk
+    // or the runtime (previously the file was written first and the UI
+    // reported failure while the new key was already saved).
+    if (cfg.model && cfg.model !== before.model && !rt.getModel("openrouter", cfg.model)) {
+      return { ok: false, error: `неизвестная модель: ${cfg.model}` };
+    }
+    saveConfig(cfg);
+    // Verify the write landed: without this, a failed/partial write looks
+    // exactly like "key does not save" in the UI.
+    const persisted = loadConfig();
+    if ((persisted.apiKey ?? "") !== (cfg.apiKey ?? "")) {
+      return { ok: false, error: "ключ не записался на диск" };
+    }
     await syncKey(rt, cfg);
-    if (cfg.cwd !== before.cwd) {
+    // A new key does not help a session that was created with the old
+    // credential cached: drop it so the next prompt rebuilds it with the
+    // fresh runtime key. Same for a working-folder change.
+    if (
+      cfg.cwd !== before.cwd ||
+      (cfg.apiKey ?? "") !== (before.apiKey ?? "") ||
+      Boolean(cfg.planMode) !== Boolean(before.planMode) ||
+      (cfg.agentMode ?? "chat") !== (before.agentMode ?? "chat")
+    ) {
       await dropSession();
       pending = { kind: "recent" };
     }
     if (session) {
       if (cfg.model && cfg.model !== before.model) {
-        const model = rt.getModel("openrouter", cfg.model);
-        if (!model) return { ok: false, error: `неизвестная модель: ${cfg.model}` };
-        await session.setModel(model);
+        await session.setModel(rt.getModel("openrouter", cfg.model));
       }
       if (cfg.thinkingLevel && cfg.thinkingLevel !== before.thinkingLevel) {
         session.setThinkingLevel(cfg.thinkingLevel);
@@ -268,22 +383,6 @@ function readIfExists(file) {
   }
 }
 
-export function getRules() {
-  return { system: readIfExists(SYSTEM_RULES_FILE), agents: readIfExists(AGENT_RULES_FILE) };
-}
-
-export async function saveRules({ system, agents }) {
-  try {
-    fs.mkdirSync(AGENT_DIR, { recursive: true });
-    fs.writeFileSync(SYSTEM_RULES_FILE, String(system ?? ""));
-    fs.writeFileSync(AGENT_RULES_FILE, String(agents ?? ""));
-    await dropSession(); // the loader reads these files on session creation
-    pending = { kind: "recent" };
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String(err?.message ?? err) };
-  }
-}
 
 // --- projects --------------------------------------------------------------
 
@@ -311,6 +410,16 @@ export function getProjectRules(id) {
   const project = (loadConfig().projects ?? []).find((item) => item.id === id);
   if (!project) return { ok: false, error: "проект не найден" };
   return { ok: true, ...readProjectAgents(project) };
+}
+
+// Rules for an arbitrary folder (used when the user re-points a project at a
+// new folder: the editor must show THAT folder's AGENTS.md, not the old one).
+export function rulesForPath(dirPath) {
+  const dir = String(dirPath ?? "").trim();
+  if (!dir) return { ok: true, path: "", text: "", exists: false };
+  const file = path.join(dir, "AGENTS.md");
+  const text = readIfExists(file);
+  return { ok: true, path: file, text: text.trim() ? text : "", exists: Boolean(text.trim()) };
 }
 
 export async function saveProjectRules(id, text) {
@@ -454,8 +563,11 @@ export async function skillsDetailed() {
 }
 
 export function deleteSkill(folder) {
-  const target = path.join(SKILLS_DIR, String(folder));
-  if (!target.startsWith(SKILLS_DIR)) return { ok: false, error: "недопустимый путь" };
+  const target = path.resolve(SKILLS_DIR, String(folder ?? ""));
+  const rel = path.relative(path.resolve(SKILLS_DIR), target);
+  if (!rel || rel.startsWith(`..${path.sep}`) || rel === ".." || path.isAbsolute(rel)) {
+    return { ok: false, error: "недопустимый путь" };
+  }
   try {
     fs.rmSync(target, { recursive: true, force: true });
     return { ok: true };
@@ -490,7 +602,7 @@ export function installBundledSkills() {
       fs.copyFileSync(from, target);
       installed.push(entry.name);
     }
-  } catch {}
+  } catch (err) { console.error("[granka]", err?.message ?? err); }
   return { ok: true, installed, skipped };
 }
 
@@ -514,13 +626,31 @@ export function listSkills() {
 
 // --- session lifecycle -----------------------------------------------------
 
+// Sessions are global state: creation must not race. ensureSession is
+// queued so two concurrent prompts cannot build two sessions and drop one.
+let sessionQueue = Promise.resolve();
+
+function withSessionLock(fn) {
+  const run = sessionQueue.then(fn);
+  sessionQueue = run.catch(() => {});
+  return run;
+}
+
 async function dropSession() {
-  if (!session) return;
+  const current = session;
+  session = undefined; // clear first: a concurrent ensureSession must not reuse it
+  sessionConfirmedTools.clear();
+  if (!current) return;
   try {
-    await session.abort();
-  } catch {}
-  session.dispose();
-  session = undefined;
+    await current.abort();
+  } catch (err) {
+    console.error("[granka] dropSession:", err?.message ?? err);
+  }
+  try {
+    current.dispose();
+  } catch (err) {
+    console.error("[granka] dropSession dispose:", err?.message ?? err);
+  }
 }
 
 export async function newSession() {
@@ -584,9 +714,23 @@ export async function listSessions(query = "", options = {}) {
       cwd: i.cwd,
       projectId: projectMap[i.id] ?? "",
       messages: i.messageCount,
-      // rough context weight for the sidebar meter (chars, not tokens)
-      weight: i.allMessagesText.length,
+      // Context weight for the sidebar: per-message chars capped at the tool
+      // output limit, because longer tool results never reach the model.
+      weight: cappedSessionChars(i),
     }));
+}
+
+function cappedSessionChars(info) {
+  const cap = Math.min(Math.max(Number(loadConfig().toolOutputLimit) || 4000, 500), 20000);
+  try {
+    return readSessionMessages(info.path).reduce(
+      (sum, message) => sum + Math.min(String(message.text ?? "").length, cap),
+      0,
+    );
+  } catch (err) {
+    console.error("[granka] session weight:", err?.message ?? err);
+    return info.allMessagesText?.length ?? 0;
+  }
 }
 
 function readSessionMessages(sessionPath) {
@@ -701,7 +845,11 @@ export async function deleteSession(id) {
   return { ok: true };
 }
 
-async function ensureSession() {
+function ensureSession() {
+  return withSessionLock(ensureSessionNow);
+}
+
+async function ensureSessionNow() {
   if (session) return session;
   const cfg = loadConfig();
   const rt = await getRuntime();
@@ -760,9 +908,22 @@ async function ensureSession() {
   }
   pending = { kind: "recent" };
 
-  const options = { cwd, modelRuntime: rt, sessionManager: manager };
+  // toolExecution parallel: independent calls in one block run together;
+  // same-file edits serialize through the per-file lock (see installFileLocks).
+  const options = { cwd, modelRuntime: rt, sessionManager: manager, toolExecution: "parallel" };
   const project = activeProject(cfg);
   const append = [];
+  // Plan mode: the agent can read and investigate but cannot change anything.
+  // Write-capable tools are excluded at the session level, not just via prompt.
+  const effectivePlan = cfg.planMode || cfg.agentMode === "plan";
+  if (effectivePlan) {
+    options.excludedToolNames = ["write", "edit", "bash", "doc_create", "doc_edit", "doc_format"];
+    append.push(
+      "## Режим плана\n" +
+        "Ты в режиме плана: только чтение и исследование. Не вноси правок и не запускай команды, меняющие файлы. " +
+        "Составь план (шаги, файлы, риски, проверка) и остановись — жди подтверждения пользователя.",
+    );
+  }
   const projectRules = project ? readProjectAgents(project).text.trim() : "";
   if (projectRules) append.push(`## Правила проекта (${projectAgentsPath(project) || "granka.json"})\n${projectRules}`);
   if (append.length) {
@@ -775,7 +936,17 @@ async function ensureSession() {
     options.resourceLoader = loader;
   }
   const model = cfg.model && rt.getModel("openrouter", cfg.model);
-  if (model) options.model = model;
+  if (model) {
+    options.model = model;
+  } else {
+    // Never let the SDK pick its own provider default (moonshotai/kimi-k2.7-code
+    // for OpenRouter): it is a paid model the user did not choose.
+    const fallback = rt.getAllModels("openrouter").filter(acceptsText)[0];
+    if (fallback) {
+      console.warn(`[granka] model ${cfg.model ?? "(none)"} unavailable, using ${fallback.id}`);
+      options.model = fallback;
+    }
+  }
 
   const tools = createGrankaTools({
     getPi: () => pi,
@@ -783,17 +954,31 @@ async function ensureSession() {
     getConfig: () => loadConfig(),
     getCwd: () => cwd,
     getAgentDir: () => AGENT_DIR,
+    recordUsage: (sessionId, modelId, usage) => recordUsage(sessionId, modelId, usage),
     askUser: (question) => uiBridge.askUser(question),
     emit: (notice) => uiBridge.emit(notice),
   });
   const enabled = [];
   if (cfg.toolTodo !== false) enabled.push(tools.todoTool);
-  if (cfg.toolAsk !== false) enabled.push(tools.askTool);
+  if (cfg.toolAsk !== false && cfg.agentMode !== "auto") enabled.push(tools.askTool);
   if (cfg.toolWeb !== false) enabled.push(tools.webSearchTool, tools.webFetchTool);
   if (cfg.toolSubagents !== false) enabled.push(tools.subagentTool);
+  if (cfg.toolGit !== false) enabled.push(tools.statusTool, tools.diffTool, tools.repoMapTool);
+  if (cfg.mcpEnabled !== false && cfg.mcpServers && Object.keys(cfg.mcpServers).length) {
+    // Lazy MCP: proxies come from the on-disk schema cache, so no server
+    // spawns at session start. First use (mcp_search or a proxy call) starts
+    // the server and refreshes the cache. A never-seen server connects once
+    // here so its proxies exist at all.
+    const mcp = await import("./mcp.mjs");
+    const cache = mcp.readMcpCache();
+    const missing = Object.keys(cfg.mcpServers).filter((name) => !cache[name]?.length);
+    if (missing.length) await mcp.refreshMcpCache(cfg.mcpServers, missing);
+    enabled.push(mcp.mcpSearchTool(cfg.mcpServers));
+    enabled.push(...mcp.mcpProxyTools(cfg.mcpServers, mcp.readMcpCache()));
+  }
   if (cfg.toolDocs !== false) {
     const docTools = createDocTools({
-      resolve: (p) => path.resolve(cwd, p),
+      resolve: (p) => assertNotSensitive(path.resolve(cwd, p)),
       emit: (notice) => uiBridge.emit(notice),
     });
     enabled.push(
@@ -811,32 +996,132 @@ async function ensureSession() {
   const newId = session.sessionManager.getSessionId();
   if (created || !(newId in projectMap)) bindSessionProject(newId, bindTo);
   if (cfg.thinkingLevel) session.setThinkingLevel(cfg.thinkingLevel);
+  installFileLocks(session);
   return session;
 }
 
-function textOf(message) {
-  const content = message?.content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.filter((b) => b.type === "text").map((b) => b.text).join("");
+// Pi runs the tool calls of one turn in parallel. Two edits to the SAME file
+// would race, so file-writing tools take a per-file lock here: different
+// files run concurrently, the same file serializes (the second edit waits).
+const EDIT_TOOLS = new Set(["edit", "write", "doc_edit", "doc_create"]);
+
+function editTargetPath(toolName, args) {
+  if (!EDIT_TOOLS.has(toolName) || !args || typeof args !== "object") return "";
+  const raw = args.path ?? args.file_path ?? args.file ?? "";
+  return raw ? path.resolve(sessionCwd(), String(raw)) : "";
 }
 
-function usageOf(message) {
-  const usage = message?.usage;
-  if (!usage) return null;
-  return {
-    input: usage.input,
-    output: usage.output,
-    cacheRead: usage.cacheRead,
-    total: usage.totalTokens,
-    cost: usage.cost?.total ?? 0,
-    billed: Boolean(usage.cost?.totalFromProvider),
+function sessionCwd() {
+  try { return session?.sessionManager.getCwd() ?? AGENT_DIR; } catch { return AGENT_DIR; }
+}
+
+function installFileLocks(sess) {
+  const locks = new Map(); // file -> Set<toolCallId>
+  const waiters = new Map(); // file -> Set<resolve>
+  const release = (file, id) => {
+    const owners = locks.get(file);
+    if (!owners) return;
+    owners.delete(id);
+    if (!owners.size) {
+      locks.delete(file);
+      const pending = waiters.get(file);
+      if (pending?.size) {
+        waiters.delete(file);
+        for (const resolve of pending) resolve();
+      }
+    }
+  };
+  // Chain the SDK's own hooks (extensions) instead of replacing them.
+  const previousBefore = sess.agent.beforeToolCall;
+  const previousAfter = sess.agent.afterToolCall;
+  const CONFIRM_TOOLS = new Set(["bash", "write", "edit", "doc_create", "doc_edit", "doc_format"]);
+  sess.agent.beforeToolCall = async (context, signal) => {
+    const toolName = context.toolCall?.name ?? "";
+    const cfg = loadConfig();
+    // auto mode means "no questions": treat it as always-allow alongside
+    // the persisted setting and per-session confirmations.
+    if (
+      CONFIRM_TOOLS.has(toolName) &&
+      cfg.confirmBashWrite !== "allow" &&
+      cfg.agentMode !== "auto" &&
+      !cfg.planMode &&
+      !sessionConfirmedTools.has(toolName) &&
+      !sessionConfirmedTools.has("*")
+    ) {
+      const args = context.args && typeof context.args === "object" ? context.args : {};
+      const detail =
+        toolName === "bash"
+          ? String(args.command ?? "").slice(0, 300)
+          : String(args.path ?? args.file_path ?? "").slice(0, 300);
+      const answer = await uiBridge.askUser({
+        question: `Агент хочет выполнить: ${toolName}${detail ? ` — ${detail}` : ""}. Разрешить?`,
+        header: "Подтверждение",
+        allowFreeform: false,
+        options: [
+          { label: "Разрешить", description: "Только этот раз" },
+          { label: "Всегда разрешать", description: `Этот инструмент (${toolName}) в текущей сессии — без вопросов` },
+          { label: "Запретить", description: "Инструмент не выполнится" },
+        ],
+      });
+      if (answer === "Всегда разрешать") sessionConfirmedTools.add(toolName);
+      else if (answer !== "Разрешить") {
+        return { block: true, reason: `Пользователь не разрешил ${toolName}` };
+      }
+    }
+    const file = editTargetPath(context.toolCall?.name, context.args);
+    if (file) {
+      const id = context.toolCall?.id ?? file;
+      while (locks.has(file)) {
+        if (signal?.aborted) throw new Error("aborted");
+        await new Promise((resolve) => {
+          if (!waiters.has(file)) waiters.set(file, new Set());
+          waiters.get(file).add(resolve);
+          signal?.addEventListener("abort", resolve, { once: true });
+        });
+      }
+      if (!locks.has(file)) locks.set(file, new Set());
+      locks.get(file).add(id);
+    }
+    return previousBefore ? previousBefore(context, signal) : undefined;
+  };
+  sess.agent.afterToolCall = async (context, signal) => {
+    const file = editTargetPath(context.toolCall?.name, context.args);
+    if (file) release(file, context.toolCall?.id ?? file);
+    return previousAfter ? previousAfter(context, signal) : undefined;
   };
 }
 
+// textOf/usageOf imported from agent-utils.mjs
+function sumTurnUsage(messages) {
+  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, billed: true };
+  let seen = false;
+  for (const message of messages ?? []) {
+    if (message?.role !== "assistant") continue;
+    const usage = usageOf(message);
+    if (!usage) continue;
+    seen = true;
+    total.input += usage.input;
+    total.output += usage.output;
+    total.cacheRead += usage.cacheRead;
+    total.cacheWrite += usage.cacheWrite;
+    total.total += usage.total;
+    total.cost += usage.cost;
+    total.billed = total.billed && usage.billed; // one estimated step taints the sum
+  }
+  return seen ? total : null;
+}
+
 function contextOf(s) {
-  const usage = s.contextUsage;
-  return usage ? { tokens: usage.tokens, percent: usage.percent, window: usage.contextWindow } : null;
+  // Prefer the provider's own numbers: the last assistant turn's totalTokens
+  // is the real context size; the SDK estimate is only a chars/4 fallback.
+  const last = [...(s.messages ?? [])].reverse().find((m) => m.role === "assistant");
+  const usage = last?.usage;
+  const sdk = s.contextUsage;
+  if (usage && (usage.totalTokens || 0) > 0 && sdk?.contextWindow > 0) {
+    const tokens = usage.totalTokens || usage.input + usage.output + usage.cacheRead + (usage.cacheWrite ?? 0);
+    return { tokens, percent: Math.min(100, (tokens / sdk.contextWindow) * 100), window: sdk.contextWindow, estimated: false };
+  }
+  return sdk ? { tokens: sdk.tokens, percent: sdk.percent, window: sdk.contextWindow, estimated: true } : null;
 }
 
 export async function lastUserPrompt() {
@@ -846,17 +1131,97 @@ export async function lastUserPrompt() {
 }
 
 // Current conversation, for re-rendering after a restart or session switch.
+// Rich history for the UI: one entry per turn (user message or a whole
+// assistant turn with its thinking, tool calls and summed usage), instead of
+// the flat text-only list that made reloaded chats look empty.
 export async function history() {
   const s = await ensureSession();
+  const turns = [];
+  let current = null;
+  const toolIndex = new Map(); // toolCallId -> tool entry in the current turn
+  const flush = () => {
+    if (!current) return;
+    const hasContent =
+      current.text.trim() || current.thinking.trim() || current.tools.length;
+    if (hasContent) turns.push(current);
+    current = null;
+    toolIndex.clear();
+  };
+  for (const message of s.messages ?? []) {
+    if (message.role === "user") {
+      flush();
+      turns.push({
+        role: "user",
+        text: textOf(message),
+        ts: message.timestamp ?? null,
+        thinking: "",
+        tools: [],
+        usage: null,
+      });
+      continue;
+    }
+    if (message.role === "toolResult") {
+      const entry = toolIndex.get(message.toolCallId);
+      if (entry) {
+        entry.result = textOf(message);
+        entry.isError = Boolean(message.isError);
+        entry.durationMs = message.durationMs ?? 0;
+      }
+      continue;
+    }
+    if (message.role !== "assistant") continue;
+    if (!current || current.role !== "assistant") {
+      current = { role: "assistant", text: "", ts: message.timestamp ?? null, thinking: "", tools: [], usage: null };
+    }
+    const usage = usageOf(message);
+    if (usage) {
+      current.usage = current.usage
+        ? {
+            input: current.usage.input + usage.input,
+            output: current.usage.output + usage.output,
+            cacheRead: current.usage.cacheRead + usage.cacheRead,
+            cacheWrite: current.usage.cacheWrite + usage.cacheWrite,
+            total: current.usage.total + usage.total,
+            cost: current.usage.cost + usage.cost,
+            billed: current.usage.billed && usage.billed,
+          }
+        : usage;
+    }
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (!block || typeof block !== "object") continue;
+      if (block.type === "text" && typeof block.text === "string") {
+        current.text += (current.text ? "\n\n" : "") + block.text;
+      } else if (block.type === "thinking" && typeof block.thinking === "string") {
+        current.thinking += (current.thinking ? "\n\n" : "") + block.thinking;
+      } else if (block.type === "toolCall") {
+        const args = typeof block.arguments === "string" ? block.arguments : JSON.stringify(block.arguments ?? "");
+        const entry = { name: block.name ?? "tool", args, result: "", durationMs: 0, isError: false };
+        current.tools.push(entry);
+        if (block.id) toolIndex.set(block.id, entry);
+      }
+    }
+  }
+  flush();
+  // The plan is restored from the last todo_write call in the transcript,
+  // so a reopened session shows the same strip the agent left behind.
+  let plan = null;
+  for (const message of s.messages ?? []) {
+    if (message.role !== "assistant") continue;
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (!block || block.type !== "toolCall" || block.name !== "todo_write") continue;
+      try {
+        const args = typeof block.arguments === "string" ? JSON.parse(block.arguments) : block.arguments;
+        if (Array.isArray(args?.items)) plan = args.items;
+      } catch (err) { console.error("[granka plan restore]", err?.message ?? err); }
+    }
+  }
   return {
+    plan,
     sessionId: s.sessionManager.getSessionId(),
     cwd: s.sessionManager.getCwd(),
     projectId: projectOfSession(s.sessionManager.getSessionId()),
     context: contextOf(s),
-    messages: s.messages
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({ role: m.role, text: textOf(m) }))
-      .filter((m) => m.text.trim()),
+    messages: turns.filter((turn) => turn.role === "user" || turn.text.trim() || turn.tools.length || turn.thinking.trim()),
   };
 }
 
@@ -946,38 +1311,74 @@ function recordUsage(sessionId, model, usage) {
     model,
     input: usage.input,
     output: usage.output,
-    cacheRead: usage.cacheRead,
+    cacheRead: usage.cacheRead ?? 0,
+    cacheWrite: usage.cacheWrite ?? 0,
     cost: usage.cost,
+    billed: Boolean(usage.billed),
   });
   try {
     fs.appendFileSync(STATS_FILE, line + "\n");
-  } catch {}
+    rotateStats();
+  } catch (err) { console.error("[granka]", err?.message ?? err); }
 }
 
+// stats.jsonl grows forever otherwise and stats() re-parses it every time:
+// keep only the most recent rows once the file passes ~1 MB.
+const STATS_MAX_BYTES = 1_000_000;
+const STATS_KEEP_ROWS = 5000;
+
+function rotateStats() {
+  const size = fs.statSync(STATS_FILE).size;
+  if (size <= STATS_MAX_BYTES) return;
+  const lines = fs.readFileSync(STATS_FILE, "utf8").split("\n").filter(Boolean);
+  fs.writeFileSync(STATS_FILE, lines.slice(-STATS_KEEP_ROWS).join("\n") + "\n");
+}
+
+let statsCache = null;
+
 export function stats() {
+  try {
+    const stat = fs.statSync(STATS_FILE);
+    if (statsCache && statsCache.mtimeMs === stat.mtimeMs && statsCache.size === stat.size) {
+      return statsCache.result;
+    }
+  } catch (err) { console.error("[granka]", err?.message ?? err); }
+  const result = computeStats();
+  try {
+    const stat = fs.statSync(STATS_FILE);
+    statsCache = { mtimeMs: stat.mtimeMs, size: stat.size, result };
+  } catch (err) { console.error("[granka]", err?.message ?? err); }
+  return result;
+}
+
+function computeStats() {
   const rows = [];
   try {
     for (const line of fs.readFileSync(STATS_FILE, "utf8").split("\n")) {
       if (!line.trim()) continue;
       try {
         rows.push(JSON.parse(line));
-      } catch {}
+      } catch (err) { console.error("[granka]", err?.message ?? err); }
     }
-  } catch {}
+  } catch (err) { console.error("[granka]", err?.message ?? err); }
 
-  const totals = { calls: 0, input: 0, output: 0, cost: 0 };
+  const totals = { calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, cost: 0, billedCalls: 0 };
   const byModel = new Map();
   const byDay = new Map();
   const bySession = new Map();
   for (const row of rows) {
+    const inputTotal = (row.input ?? 0) + (row.cacheRead ?? 0) + (row.cacheWrite ?? 0);
     totals.calls += 1;
-    totals.input += row.input ?? 0;
+    totals.input += inputTotal;
+    totals.cacheRead += row.cacheRead ?? 0;
+    totals.cacheWrite += row.cacheWrite ?? 0;
     totals.output += row.output ?? 0;
     totals.cost += row.cost ?? 0;
+    if (row.billed) totals.billedCalls += 1;
     const model = row.model ?? "—";
     const modelRow = byModel.get(model) ?? { model, calls: 0, input: 0, output: 0, cost: 0 };
     modelRow.calls += 1;
-    modelRow.input += row.input ?? 0;
+    modelRow.input += inputTotal;
     modelRow.output += row.output ?? 0;
     modelRow.cost += row.cost ?? 0;
     byModel.set(model, modelRow);
@@ -985,7 +1386,7 @@ export function stats() {
     const dayRow = byDay.get(day) ?? { day, calls: 0, cost: 0, input: 0, output: 0 };
     dayRow.calls += 1;
     dayRow.cost += row.cost ?? 0;
-    dayRow.input += row.input ?? 0;
+    dayRow.input += inputTotal;
     dayRow.output += row.output ?? 0;
     byDay.set(day, dayRow);
     const sessionRow = bySession.get(row.sessionId) ?? { sessionId: row.sessionId, calls: 0, cost: 0 };
@@ -1004,46 +1405,168 @@ export function stats() {
 
 // Attachments are copied into the agent home so the session keeps working even
 // if the original file moves; the model receives paths, images also as pixels.
-export async function attachFiles(paths = []) {
+// Folders are expanded recursively (heavy dirs skipped), identical content is
+// deduplicated by hash, old copies are pruned, and large copies report
+// progress through onProgress.
+const ATTACH_SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", ".venv", "__pycache__", ".next", "checkpoints"]);
+const ATTACH_MAX_FILES = 100;
+const ATTACH_MAX_AGE_DAYS = 30;
+const ATTACH_MAX_TOTAL_BYTES = 500 * 1024 * 1024;
+
+function collectAttachFiles(source, out) {
+  const stat = fs.statSync(source);
+  if (stat.isFile()) {
+    out.push(source);
+    return;
+  }
+  if (!stat.isDirectory()) return;
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    if (out.length >= ATTACH_MAX_FILES) return;
+    if (entry.isDirectory()) {
+      if (ATTACH_SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+      collectAttachFiles(path.join(source, entry.name), out);
+    } else if (entry.isFile()) {
+      out.push(path.join(source, entry.name));
+    }
+  }
+}
+
+function hashFile(filePath) {
+  const hash = crypto.createHash("sha1");
+  const fd = fs.openSync(filePath, "r");
+  const buffer = Buffer.alloc(1024 * 256);
+  try {
+    let read;
+    while ((read = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
+function pruneAttachments() {
+  try {
+    const now = Date.now();
+    const byAge = [];
+    let total = 0;
+    for (const name of fs.readdirSync(ATTACH_DIR)) {
+      const full = path.join(ATTACH_DIR, name);
+      const stat = fs.statSync(full);
+      if (!stat.isFile()) continue;
+      byAge.push({ name, full, mtime: stat.mtimeMs, bytes: stat.size });
+      total += stat.size;
+    }
+    byAge.sort((a, b) => a.mtime - b.mtime);
+    for (const item of byAge) {
+      const tooOld = now - item.mtime > ATTACH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+      const overBudget = total > ATTACH_MAX_TOTAL_BYTES;
+      if (!tooOld && !overBudget) continue;
+      fs.rmSync(item.full, { force: true });
+      total -= item.bytes;
+    }
+  } catch (err) { console.error("[granka prune attachments]", err?.message ?? err); }
+}
+
+async function copyWithProgress(source, target, onProgress) {
+  const total = fs.statSync(source).size;
+  if (total < 1024 * 256 || !onProgress) {
+    fs.copyFileSync(source, target);
+    return;
+  }
+  const reader = fs.createReadStream(source, { highWaterMark: 1024 * 256 });
+  const writer = fs.createWriteStream(target);
+  let done = 0;
+  await new Promise((resolve, reject) => {
+    reader.on("data", (chunk) => {
+      done += chunk.length;
+      onProgress({ path: source, done, total });
+    });
+    reader.on("error", reject);
+    writer.on("error", reject);
+    writer.on("finish", resolve);
+    reader.pipe(writer);
+  });
+}
+
+export async function attachFiles(paths = [], onProgress = () => {}) {
   const cfg = loadConfig();
   const limitBytes = (Number(cfg.attachMaxMb) || 25) * 1024 * 1024;
   fs.mkdirSync(ATTACH_DIR, { recursive: true });
-  const added = [];
+  pruneAttachments();
+  const { docInfo } = await import("./docs.mjs");
+  const files = [];
   const skipped = [];
   for (const raw of paths) {
     try {
       const source = path.resolve(String(raw));
-      const stat = fs.statSync(source);
-      if (!stat.isFile()) {
-        skipped.push({ path: source, reason: "не файл" });
-        continue;
-      }
-      if (stat.size > limitBytes) {
-        skipped.push({ path: source, reason: `больше ${Math.round(limitBytes / 1024 / 1024)} МБ` });
-        continue;
-      }
-      const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-      const name = path.basename(source);
-      const target = path.join(ATTACH_DIR, `${stamp}-${name}`);
-      fs.copyFileSync(source, target);
-      const ext = path.extname(name).toLowerCase();
-      added.push({
-        id: stamp,
-        name,
-        path: target,
-        source,
-        bytes: stat.size,
-        kind: [".pdf", ".docx", ".md", ".txt", ".html", ".htm"].includes(ext)
-          ? "document"
-          : [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)
-            ? "image"
-            : "file",
-      });
+      fs.statSync(source);
+      collectAttachFiles(source, files);
     } catch (err) {
       skipped.push({ path: String(raw), reason: String(err?.message ?? err) });
     }
   }
+  const added = [];
+  const seenHashes = new Map();
+  for (const source of files.slice(0, ATTACH_MAX_FILES)) {
+    try {
+      const stat = fs.statSync(source);
+      if (stat.size > limitBytes) {
+        skipped.push({ path: source, reason: `больше ${Math.round(limitBytes / 1024 / 1024)} МБ` });
+        continue;
+      }
+      const digest = hashFile(source);
+      let target = seenHashes.get(digest);
+      const name = path.basename(source);
+      if (!target) {
+        const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        target = path.join(ATTACH_DIR, `${stamp}-${name}`);
+        await copyWithProgress(source, target, onProgress);
+        seenHashes.set(digest, target);
+      }
+      const ext = path.extname(name).toLowerCase();
+      const kind = [".pdf", ".docx", ".md", ".txt", ".html", ".htm"].includes(ext)
+        ? "document"
+        : [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)
+          ? "image"
+          : "file";
+      const info = kind === "document" ? await docInfo(target) : {};
+      const meta = info.pages ? `${info.pages} стр.` : info.blocks ? `${info.blocks} блоков` : info.lines ? `${info.lines} строк` : "";
+      added.push({
+        id: digest.slice(0, 8),
+        name,
+        path: target,
+        source,
+        bytes: stat.size,
+        kind,
+        meta,
+      });
+    } catch (err) {
+      skipped.push({ path: source, reason: String(err?.message ?? err) });
+    }
+  }
+  if (files.length > ATTACH_MAX_FILES) {
+    skipped.push({ path: "…", reason: `ограничение ${ATTACH_MAX_FILES} файлов на раз` });
+  }
   return { ok: true, added, skipped };
+}
+
+// Base64 data URL for an image attachment (used by the renderer to downscale
+// it on a canvas before it goes to the model — full-size screenshots would
+// otherwise bloat every request).
+export function attachmentDataUrl(filePath) {
+  try {
+    const full = path.resolve(String(filePath ?? ""));
+    if (!full.startsWith(ATTACH_DIR) || !fs.existsSync(full)) return { ok: false };
+    const ext = path.extname(full).toLowerCase();
+    const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" }[ext];
+    if (!mime) return { ok: false };
+    return { ok: true, dataUrl: `data:${mime};base64,${fs.readFileSync(full).toString("base64")}` };
+  } catch (err) {
+    console.error("[granka attachmentDataUrl]", err?.message ?? err);
+    return { ok: false };
+  }
 }
 
 export async function attachText({ name, text }) {
@@ -1086,13 +1609,95 @@ export async function saveAttachmentImage({ name, dataUrl }) {
   }
 }
 
-export async function ask(question, onDelta, onTool, onNotify = () => {}, attachments = []) {
+// Checkpoints: before the first write/edit of a turn, snapshot the working
+// folder (minus heavy dirs) so the user can roll back from the chat.
+const CHECKPOINT_DIR = path.join(AGENT_DIR, "checkpoints");
+const CHECKPOINT_SKIP = new Set([".git", "node_modules", "dist", "build", ".venv", "__pycache__", ".next"]);
+
+function checkpointFilter(src) {
+  return !CHECKPOINT_SKIP.has(path.basename(src));
+}
+
+export function createCheckpoint(cwd) {
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const dest = path.join(CHECKPOINT_DIR, id);
+  fs.mkdirSync(CHECKPOINT_DIR, { recursive: true });
+  fs.cpSync(cwd, dest, { recursive: true, filter: checkpointFilter });
+  pruneCheckpoints();
+  return id;
+}
+
+function pruneCheckpoints() {
+  try {
+    const entries = fs.readdirSync(CHECKPOINT_DIR)
+      .map((name) => ({ name, mtime: fs.statSync(path.join(CHECKPOINT_DIR, name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const entry of entries.slice(20)) {
+      fs.rmSync(path.join(CHECKPOINT_DIR, entry.name), { recursive: true, force: true });
+    }
+  } catch (err) { console.error("[granka] prune checkpoints:", err?.message ?? err); }
+}
+
+export function restoreCheckpoint(id) {
+  const src = path.join(CHECKPOINT_DIR, String(id ?? ""));
+  if (!insideCheckpointDir(src) || !fs.existsSync(src)) {
+    return { ok: false, error: "чекпоинт не найден" };
+  }
+  const cwd = session?.sessionManager.getCwd() ?? loadConfig().cwd ?? AGENT_DIR;
+  fs.cpSync(src, cwd, { recursive: true, force: true, filter: checkpointFilter });
+  return { ok: true };
+}
+
+function insideCheckpointDir(target) {
+  const rel = path.relative(path.resolve(CHECKPOINT_DIR), path.resolve(target));
+  return Boolean(rel) && !rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel);
+}
+
+async function maybeCheckpoint(toolName, session, state) {
+  if (state.done || !["edit", "write", "doc_edit", "doc_create"].includes(toolName)) return "";
+  state.done = true;
+  const cwd = session.sessionManager.getCwd();
+  return createCheckpoint(cwd);
+}
+
+// User hook (settings): a shell command run in the project folder after
+// every file edit, e.g. a formatter. Trusted: it comes from the user's own
+// config, never from model output.
+async function runAfterEditHook(toolName, session) {
+  const command = String(loadConfig().hooks?.afterEdit ?? "").trim();
+  if (!command || !["edit", "write", "doc_edit", "doc_create"].includes(toolName)) return "";
+  const { exec } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execAsync = promisify(exec);
+  const cwd = session.sessionManager.getCwd();
+  try {
+    const { stdout, stderr } = await execAsync(command, {
+      cwd,
+      timeout: 60000,
+      maxBuffer: 256 * 1024,
+      shell: "/bin/bash",
+    });
+    const out = String(stdout || stderr || "").trim().slice(-500);
+    return out ? `hook: ${out}` : "";
+  } catch (err) {
+    const out = String(err?.stdout || err?.stderr || err?.message || "").trim().slice(-500);
+    return `hook не удался: ${out}`;
+  }
+}
+
+export async function ask(question, onDelta, onTool, onNotify = () => {}, attachments = [], onThinking = () => {}) {
   const s = await ensureSession();
+  const checkpointState = { done: false };
   const unsubscribe = s.subscribe((event) => {
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      onDelta(event.assistantMessageEvent.delta);
+    if (event.type === "message_update") {
+      const kind = event.assistantMessageEvent.type;
+      if (kind === "text_delta") onDelta(event.assistantMessageEvent.delta);
+      else if (kind === "thinking_delta") onThinking(event.assistantMessageEvent.delta);
     } else if (event.type === "tool_execution_start") {
       onTool({ phase: "start", name: event.toolName, args: clip(event.args) });
+      maybeCheckpoint(event.toolName, s, checkpointState).then((id) => {
+        if (id) onNotify({ kind: "checkpoint", id });
+      }).catch((err) => console.error("[granka] checkpoint:", err?.message ?? err));
     } else if (event.type === "tool_execution_end") {
       onTool({
         phase: "end",
@@ -1101,6 +1706,9 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
         durationMs: event.durationMs,
         result: clip(event.result),
       });
+      runAfterEditHook(event.toolName, s).then((output) => {
+        if (output) onNotify({ kind: "hook", output });
+      }).catch((err) => console.error("[granka] hook:", err?.message ?? err));
     } else if (event.type === "compaction_end") {
       onNotify({ kind: "compaction", reason: event.reason, aborted: event.aborted });
     } else if (event.type === "queue_update") {
@@ -1112,9 +1720,18 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
   for (const item of attachments ?? []) {
     if (item.kind === "image") {
       try {
+        // Prefer the renderer's downscaled copy: full-size screenshots bloat
+        // every request with base64 pixels.
+        if (item.dataUrl) {
+          const match = /^data:(image\/[a-z]+);base64,(.+)$/i.exec(String(item.dataUrl));
+          if (match) {
+            images.push({ type: "image", data: match[2], mimeType: match[1] });
+            continue;
+          }
+        }
         const mime = item.name.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
         images.push({ type: "image", data: fs.readFileSync(item.path).toString("base64"), mimeType: mime });
-      } catch {}
+      } catch (err) { console.error("[granka]", err?.message ?? err); }
     } else {
       docs.push(item);
     }
@@ -1125,10 +1742,14 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
         .join("\n")}`
     : "";
   try {
+    // One prompt with tool calls produces many assistant turns, each with its
+    // own usage. Summing them all is the only honest per-turn total — the
+    // last message alone undercounts spend by most of the turn.
+    const startIndex = s.messages.length;
     await s.prompt(question + attachmentNote, images.length ? { images } : undefined);
-    const last = [...s.messages].reverse().find((m) => m.role === "assistant");
-    const usage = usageOf(last);
-    recordUsage(s.sessionManager.getSessionId(), loadConfig().model, usage);
+    const fresh = s.messages.slice(startIndex);
+    const usage = sumTurnUsage(fresh);
+    recordUsage(s.sessionManager.getSessionId(), s.model?.id ?? loadConfig().model, usage);
     return { ok: true, text: s.getLastAssistantText() ?? "", usage, context: contextOf(s) };
   } catch (err) {
     return { ok: false, error: String(err?.message ?? err) };
@@ -1149,4 +1770,69 @@ export async function isBusy() {
 
 export async function abort() {
   await session?.abort();
+}
+
+// --- backup: export/import ~/.granka as a .zip -----------------------------
+const BACKUP_SKIP_DIRS = new Set(["logs", "checkpoints", ".git"]);
+const BACKUP_SKIP_FILES = new Set(["auth.json"]);
+
+function collectBackupFiles(dir, base, out) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && BACKUP_SKIP_DIRS.has(entry.name)) continue;
+    if (entry.isFile() && BACKUP_SKIP_FILES.has(entry.name)) continue;
+    const full = path.join(dir, entry.name);
+    const rel = path.relative(base, full).replace(/\\/g, "/");
+    if (entry.isDirectory()) collectBackupFiles(full, base, out);
+    else if (entry.isFile()) out.push([rel, full]);
+  }
+}
+
+export async function exportBackup(destPath) {
+  try {
+    const { zipSync } = await import("fflate");
+    const files = [];
+    collectBackupFiles(AGENT_DIR, AGENT_DIR, files);
+    const entries = {};
+    for (const [rel, full] of files) entries[rel] = fs.readFileSync(full);
+    entries["granka-backup.json"] = Buffer.from(JSON.stringify({ app: "granka", version: 1, exportedAt: new Date().toISOString(), files: files.length }, null, 2));
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.writeFileSync(destPath, Buffer.from(zipSync(entries, { level: 6 })));
+    return { ok: true, files: files.length, path: destPath };
+  } catch (err) {
+    return { ok: false, error: String(err?.message ?? err) };
+  }
+}
+
+export async function importBackup(zipPath) {
+  try {
+    const { unzipSync } = await import("fflate");
+    const entries = unzipSync(fs.readFileSync(zipPath));
+    let restored = 0;
+    for (const [rel, data] of Object.entries(entries)) {
+      if (rel.includes("..") || path.isAbsolute(rel) || rel === "granka-backup.json") continue;
+      if (BACKUP_SKIP_FILES.has(path.basename(rel))) continue;
+      const dest = path.join(AGENT_DIR, rel);
+      if (!dest.startsWith(AGENT_DIR + path.sep)) continue;
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, data);
+      restored += 1;
+    }
+    await dropSession();
+    pending = { kind: "recent" };
+    return { ok: true, restored };
+  } catch (err) {
+    return { ok: false, error: String(err?.message ?? err) };
+  }
+}
+
+// Graceful shutdown (main before-quit): stop the live turn, dispose the
+// session and close MCP child processes so nothing outlives the app.
+export async function shutdown() {
+  await withSessionLock(async () => {
+    await dropSession();
+  }).catch(() => {});
+  try {
+    const mcp = await import("./mcp.mjs");
+    if (typeof mcp.mcpClients === "function") mcp.mcpClients({});
+  } catch {}
 }

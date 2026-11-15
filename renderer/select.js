@@ -22,6 +22,30 @@
     if (event.key === "Escape" && panel) close();
   });
 
+  // Full keyboard navigation inside an open panel: arrows move between
+  // options, Home/End jump to the ends (buttons are natively focusable).
+  document.addEventListener("keydown", (event) => {
+    if (!panel) return;
+    const item = event.target.closest?.(".selectItem");
+    if (!item) return;
+    const items = [...panel.querySelectorAll(".selectItem")];
+    const index = items.indexOf(item);
+    if (index < 0) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      (items[index + 1] ?? items[0]).focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      (items[index - 1] ?? items[items.length - 1]).focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      items[0].focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      items[items.length - 1].focus();
+    }
+  });
+
   function create({ options = [], groups = [], value, onChange, ariaLabel, width }) {
     const button = document.createElement("button");
     button.type = "button";

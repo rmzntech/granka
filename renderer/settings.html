@@ -2,13 +2,13 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:" />
   <title>Настройки</title>
   <link rel="stylesheet" href="fonts.css" />
   <link rel="stylesheet" href="app.css" />
   <link rel="stylesheet" href="settings.css" />
 </head>
-<body data-theme="light">
+<body data-theme="system">
   <header id="settingsTitlebar">
     <span class="titlebarTitle">Настройки</span>
     <div class="toolbarSpacer"></div>
@@ -21,8 +21,8 @@
   <svg class="sprite" aria-hidden="true">
     <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /></symbol>
     <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol>
-    <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
-    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></symbol>
   </svg>
 
   <div id="settingsShell">
@@ -31,7 +31,9 @@
       <button class="navItem" data-pane="model">Модель</button>
       <button class="navItem" data-pane="agent">Агент</button>
       <button class="navItem" data-pane="tools">Инструменты</button>
+      <button class="navItem" data-pane="mcp">MCP</button>
       <button class="navItem" data-pane="appearance">Оформление</button>
+      <button class="navItem" data-pane="themes">Темы</button>
       <button class="navItem" data-pane="skills">Скиллы</button>
     </nav>
 
@@ -99,10 +101,49 @@
           <input type="checkbox" id="compactionEnabled" />
           <span class="switchText">Автоматическое сжатие контекста<small>Когда контекст близок к пределу, старая часть диалога сворачивается в резюме.</small></span>
         </label>
+        <div class="field">
+          <span>Мышление модели в чате</span>
+          <div id="thinkingDisplaySelect"></div>
+          <span class="fieldHint">«Вживую, свернуть» показывает рассуждения во время генерации и сворачивает их после ответа.</span>
+        </div>
+        <div class="field">
+          <span>Вызовы инструментов в чате</span>
+          <div id="toolDisplaySelect"></div>
+          <span class="fieldHint">«Свёрнуто» показывает одну строку-сводку на ход — список вызовов раскрывается кликом.</span>
+        </div>
         <label class="switchRow">
           <input type="checkbox" id="cacheRetentionLong" />
           <span class="switchText">Долгий кэш промпта<small>Стабильный префикс запроса кэшируется провайдером: входные токены дешевле.</small></span>
         </label>
+        <div class="field">
+          <span>Режим работы агента</span>
+          <div id="agentModeSelect"></div>
+          <span class="fieldHint">Чат — обычная работа; План — только чтение; Авто — без вопросов; Дебаг — инструменты и мышление всегда открыты.</span>
+        </div>
+        <div class="field">
+          <span>Подтверждение записи и команд</span>
+          <div id="confirmBashWriteSelect"></div>
+          <span class="fieldHint">«Спрашивать» — granka спросит перед bash, записью и правкой файлов. «Всегда разрешать» — без вопросов (в диалоге подтверждения можно выбрать «всегда» только для текущей сессии).</span>
+        </div>
+        <label class="switchRow">
+          <input type="checkbox" id="planMode" />
+          <span class="switchText">Режим плана<small>Агент только читает и составляет план: инструменты записи недоступны.</small></span>
+        </label>
+        <div class="field">
+          <span>Пресет работы</span>
+          <div id="presetSelect"></div>
+          <span class="fieldHint">Эконом — дешёвое мышление для рутины; максимум — глубокое рассуждение для сложных задач.</span>
+        </div>
+        <div class="field">
+          <label for="dailyBudget">Дневной бюджет, $ (0 — без лимита)</label>
+          <input class="textInput" id="dailyBudget" type="number" min="0" step="0.5" />
+          <span class="fieldHint">granka предупредит в чате, когда сегодняшние расходы превысят бюджет.</span>
+        </div>
+        <div class="field">
+          <label for="afterEditHook">Команда после правок (edit/write)</label>
+          <input class="textInput" id="afterEditHook" type="text" placeholder="npx prettier --write ." spellcheck="false" />
+          <span class="fieldHint">Hook: shell-команда, запускается в папке проекта после каждой правки. Пусто — выключено.</span>
+        </div>
         <div class="field">
           <label for="toolOutputLimit">Лимит вывода инструментов, символов</label>
           <input class="textInput" id="toolOutputLimit" type="number" min="500" step="500" />
@@ -130,6 +171,10 @@
           <span class="switchText">Веб-поиск и чтение страниц<small>web_search и web_fetch: Википедия, GitHub, Hacker News, DuckDuckGo. Без ключей и аккаунтов.</small></span>
         </label>
         <label class="switchRow">
+          <input type="checkbox" id="toolGit" />
+          <span class="switchText">Git: статус и diff<small>git_status и git_diff — чтение состояния репозитория без bash.</small></span>
+        </label>
+        <label class="switchRow">
           <input type="checkbox" id="toolSubagents" />
           <span class="switchText">Подагенты (task)<small>Узкая подзадача уходит отдельному агенту со своим контекстом.</small></span>
         </label>
@@ -149,12 +194,24 @@
         </label>
       </section>
 
+      <section class="settingsPane" data-pane="mcp">
+        <h2>MCP</h2>
+        <label class="switchRow">
+          <input type="checkbox" id="mcpEnabled" />
+          <span class="switchText">MCP-серверы включены<small>Выключено: ни один MCP-процесс не запускается и инструментов mcp_* у агента нет.</small></span>
+        </label>
+        <div class="field">
+          <label for="mcpServers">MCP-серверы (JSON, stdio)</label>
+          <textarea class="textInput" id="mcpServers" rows="4" spellcheck="false" placeholder='{"example": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"]}}'></textarea>
+          <span class="fieldHint">Инструменты MCP-серверов появятся у агента как mcp_&lt;сервер&gt;_&lt;инструмент&gt;. Серверы запускаются локально, как обычные команды, при старте сессии.</span>
+        </div>
+      </section>
+
       <section class="settingsPane" data-pane="appearance">
         <h2>Оформление</h2>
         <div class="field">
           <span>Тема</span>
-          <div id="themeSelect"></div>
-          <span class="fieldHint">У каждой темы свой акцентный цвет. «Как в системе» переключает светлую и тёмную пару Granka.</span>
+          <span class="fieldHint">Темы выбираются карточками в разделе «Темы» — там же превью каждой палитры.</span>
         </div>
         <div class="field">
           <span>Размер текста в диалоге</span>
@@ -179,6 +236,11 @@
         </label>
       </section>
 
+      <section class="settingsPane" data-pane="themes">
+        <h2>Темы</h2>
+        <div id="themeCards"></div>
+      </section>
+
       <section class="settingsPane" data-pane="skills">
         <h2>Скиллы</h2>
         <div class="skillsToolbar">
@@ -187,6 +249,13 @@
         </div>
         <div id="skillsList" class="skillsList"></div>
         <span class="fieldHint">Скиллы лежат в ~/.granka/skills. Модель видит их название и описание; тело читается, когда задача совпала.</span>
+        <h2 class="settingsSubhead">Данные</h2>
+        <div class="skillsToolbar">
+          <button class="ghostBtn" id="exportBackup">Экспорт бэкапа</button>
+          <button class="ghostBtn" id="importBackup">Импорт бэкапа</button>
+          <span class="fieldHint" id="backupMeta"></span>
+        </div>
+        <span class="fieldHint">Бэкап — zip с ~/.granka (сессии, настройки, скиллы). auth.json не входит.</span>
       </section>
 
     </div>
@@ -198,6 +267,7 @@
   </footer>
 
   <script src="themes.js"></script>
+  <script src="theme-apply.js"></script>
   <script src="select.js"></script>
   <script src="settings.js"></script>
 </body>

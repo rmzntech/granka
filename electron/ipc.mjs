@@ -1,10 +1,21 @@
 import { BrowserWindow, Notification, dialog, ipcMain, nativeTheme, shell, systemPreferences } from "electron";
+import path from "node:path";
 import * as agent from "./agent.mjs";
+import { setTrayBusy, bumpUnread } from "./tray-state.mjs";
 
 const pendingQuestions = new Map();
 let questionSeq = 0;
 
-const LIGHT_THEMES = ["granka-light", "catppuccin-latte", "rose-pine-dawn", "nord-light", "gruvbox-light", "solarized-light"];
+// The renderer is trusted UI, but IPC arguments are still untrusted input:
+// never open or reveal a path that is not inside granka's own directories.
+function insideDir(dir, target) {
+  const resolved = path.resolve(String(target ?? ""));
+  const base = path.resolve(dir);
+  const rel = path.relative(base, resolved);
+  return rel !== "" && !rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel);
+}
+
+const LIGHT_THEMES = ["granka-light", "claude", "nike", "cursor", "ibm", "opencode", "dell-1996", "apple"];
 
 function syncNativeTheme(config) {
   const pref = config?.theme ?? "auto";
@@ -17,6 +28,7 @@ function syncNativeTheme(config) {
 
 export function registerIpc({ openSettings } = {}) {
   const winOf = (event) => BrowserWindow.fromWebContents(event.sender);
+  ipcMain.handle("tray:busy", (_e, value) => setTrayBusy(value));
   ipcMain.handle("window:minimize", (e) => winOf(e)?.minimize());
   ipcMain.handle("window:toggleMaximize", (e) => {
     const win = winOf(e);
@@ -28,15 +40,21 @@ export function registerIpc({ openSettings } = {}) {
   ipcMain.handle("window:close", (e) => winOf(e)?.close());
   ipcMain.handle("window:isMaximized", (e) => Boolean(winOf(e)?.isMaximized()));
 
-  ipcMain.handle("config:load", () => agent.loadConfig());
+  // The key never leaves main: renderer only learns whether one is set.
+  const publicConfig = (cfg) => {
+    const { apiKey, ...rest } = cfg ?? {};
+    return { ...rest, hasApiKey: Boolean(apiKey) };
+  };
+
+  ipcMain.handle("config:load", () => publicConfig(agent.loadConfig()));
   ipcMain.handle("config:save", async (e, patch) => {
     const result = await agent.applyConfig(patch);
     if (result.ok) {
       const next = agent.loadConfig();
       syncNativeTheme(next);
-      const message = { config: next };
+      const message = publicConfig(next);
       for (const win of BrowserWindow.getAllWindows()) {
-        win.webContents.send("config:changed", message.config);
+        win.webContents.send("config:changed", message);
       }
     }
     return result;
@@ -61,8 +79,10 @@ export function registerIpc({ openSettings } = {}) {
   ipcMain.handle("skills:delete", (_e, folder) => agent.deleteSkill(folder));
   ipcMain.handle("skills:install", () => agent.installBundledSkills());
   ipcMain.handle("skills:reveal", async (_e, folder) => {
+    const target = path.join(agent.SKILLS_DIR, String(folder ?? ""));
+    if (!insideDir(agent.SKILLS_DIR, target)) return { ok: false, error: "недопустимый путь" };
     const { shell: sh } = await import("electron");
-    sh.openPath(String(folder));
+    sh.openPath(target);
     return { ok: true };
   });
   ipcMain.handle("sessions:delete", async (_e, id) => {
@@ -77,14 +97,12 @@ export function registerIpc({ openSettings } = {}) {
     return response === 0 ? agent.deleteSession(id) : { ok: false, error: "отменено" };
   });
 
-  ipcMain.handle("rules:get", () => agent.getRules());
-  ipcMain.handle("rules:save", (_e, rules) => agent.saveRules(rules));
-
   ipcMain.handle("projects:list", () => agent.listProjects());
   ipcMain.handle("projects:save", (_e, project) => agent.saveProject(project));
   ipcMain.handle("projects:delete", (_e, id) => agent.deleteProject(id));
   ipcMain.handle("projects:activate", (_e, id) => agent.activateProject(id));
   ipcMain.handle("projects:rules", (_e, id) => agent.getProjectRules(id));
+  ipcMain.handle("projects:rulesForPath", (_e, dir) => agent.rulesForPath(dir));
   ipcMain.handle("projects:saveRules", (_e, id, text) => agent.saveProjectRules(id, text));
 
   ipcMain.handle("subagents:list", async () => {
@@ -106,48 +124,98 @@ export function registerIpc({ openSettings } = {}) {
     return { ok: true };
   });
 
-  ipcMain.handle("chat:ask", async (e, question, attachments) => {
+  // One ask at a time: the agent session and the UI bridge are global, so
+  // concurrent asks would interleave deltas and question answers.
+  let askQueue = Promise.resolve();
+  ipcMain.handle("chat:ask", (e, question, attachments) => {
+    const run = askQueue.then(() => handleAsk(e, question, attachments));
+    askQueue = run.catch(() => {});
+    return run;
+  });
+
+  async function handleAsk(e, question, attachments) {
     const win = BrowserWindow.fromWebContents(e.sender);
     agent.setUiBridge({
       askUser: (payload) =>
         new Promise((resolve) => {
+          if (e.sender.isDestroyed()) return resolve("");
           const id = `q${++questionSeq}`;
           pendingQuestions.set(id, resolve);
-          e.sender.send("chat:question", { id, ...payload });
+          try {
+            e.sender.send("chat:question", { id, ...payload });
+          } catch (err) {
+            pendingQuestions.delete(id);
+            console.error("[granka] question send:", err?.message ?? err);
+            return resolve("");
+          }
           setTimeout(() => {
             if (!pendingQuestions.has(id)) return;
             pendingQuestions.delete(id);
             resolve("");
           }, 300000);
         }),
-      emit: (notice) => e.sender.send("chat:notice", notice),
+      emit: (notice) => {
+        if (!e.sender.isDestroyed()) e.sender.send("chat:notice", notice);
+      },
     });
     const result = await agent.ask(
       question,
-      (delta) => e.sender.send("chat:delta", delta),
-      (tool) => e.sender.send("chat:tool", tool),
-      (notice) => e.sender.send("chat:notice", notice),
+      (delta) => { if (!e.sender.isDestroyed()) e.sender.send("chat:delta", delta); },
+      (tool) => { if (!e.sender.isDestroyed()) e.sender.send("chat:tool", tool); },
+      (notice) => { if (!e.sender.isDestroyed()) e.sender.send("chat:notice", notice); },
       Array.isArray(attachments) ? attachments : [],
+      (thinking) => { if (!e.sender.isDestroyed()) e.sender.send("chat:thinking", thinking); },
     );
     // OS notification when the window is in the background (feature: notify on settle)
     const wantsNotify = agent.loadConfig().osNotifications !== false;
     if (wantsNotify && win && !win.isFocused() && result.ok) {
+      bumpUnread();
       new Notification({
         title: "granka",
         body: (result.text || "готово").replace(/\s+/g, " ").slice(0, 160),
       }).show();
     }
     return result;
-  });
+  }
   ipcMain.handle("chat:queue", (_e, text, mode) => agent.queueMessage(text, mode));
-  ipcMain.handle("attach:add", (_e, paths) => agent.attachFiles(paths));
+  ipcMain.handle("attach:add", (e, paths) =>
+    agent.attachFiles(paths, (progress) => {
+      if (!e.sender.isDestroyed()) e.sender.send("attach:progress", progress);
+    }),
+  );
+  ipcMain.handle("attach:dataUrl", (_e, filePath) => agent.attachmentDataUrl(filePath));
   ipcMain.handle("attach:image", (_e, payload) => agent.saveAttachmentImage(payload));
   ipcMain.handle("attach:text", (_e, payload) => agent.attachText(payload));
   ipcMain.handle("stats:get", () => agent.stats());
   ipcMain.handle("app:paths", () => agent.appPaths());
+  ipcMain.handle("backup:export", async (e) => {
+    const win = winOf(e);
+    const result = win
+      ? await dialog.showSaveDialog(win, { defaultPath: `granka-backup-${new Date().toISOString().slice(0, 10)}.zip`, filters: [{ name: "Zip", extensions: ["zip"] }] })
+      : await dialog.showSaveDialog({ defaultPath: `granka-backup-${new Date().toISOString().slice(0, 10)}.zip`, filters: [{ name: "Zip", extensions: ["zip"] }] });
+    if (result.canceled || !result.filePath) return { ok: false, error: "отменено" };
+    return agent.exportBackup(result.filePath);
+  });
+  ipcMain.handle("backup:import", async (e) => {
+    const win = winOf(e);
+    const options = { properties: ["openFile"], filters: [{ name: "Zip", extensions: ["zip"] }] };
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return { ok: false, error: "отменено" };
+    const { response } = await dialog.showMessageBox(win ?? undefined, {
+      type: "warning", buttons: ["Восстановить", "Отмена"], defaultId: 1, cancelId: 1,
+      message: "Восстановить данные granka из бэкапа?",
+      detail: "Текущие сессии, настройки и скиллы будут заменены файлами из архива. Ключи (auth.json) не восстанавливаются.",
+    });
+    if (response !== 0) return { ok: false, error: "отменено" };
+    return agent.importBackup(result.filePaths[0]);
+  });
   ipcMain.handle("compaction:apply", async () => agent.applyCompactionSettings());
   ipcMain.handle("shell:reveal", (_e, target) => {
-    shell.showItemInFolder(String(target));
+    const allowed = [agent.AGENT_DIR, agent.SESSION_DIR];
+    if (!allowed.some((dir) => insideDir(dir, target))) {
+      return { ok: false, error: "путь вне каталогов granka" };
+    }
+    shell.showItemInFolder(path.resolve(String(target)));
     return { ok: true };
   });
 
@@ -181,8 +249,10 @@ export function registerIpc({ openSettings } = {}) {
     const fsp = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const file = join(tmpdir(), `granka-preview-${Date.now()}.html`);
-    await fsp.writeFile(file, String(payload?.html ?? ""), "utf8");
+    const { randomBytes } = await import("node:crypto");
+    const file = join(tmpdir(), `granka-preview-${randomBytes(8).toString("hex")}.html`);
+    const csp = "default-src 'self' data:; script-src 'none'; style-src 'unsafe-inline' data:; img-src data:; font-src 'self' data:";
+    await fsp.writeFile(file, `<!doctype html><html><head><meta charset="utf-8" /><meta http-equiv="Content-Security-Policy" content="${csp}" /></head><body>${String(payload?.html ?? "")}</body></html>`, { encoding: "utf8", mode: 0o600 });
     const win = new BrowserWindow({
       width: 900,
       height: 700,
@@ -190,10 +260,12 @@ export function registerIpc({ openSettings } = {}) {
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
     win.setMenuBarVisibility(false);
+    win.on("closed", () => fsp.rm(file, { force: true }).catch(() => {}));
     await win.loadFile(file);
-    return { ok: true, file };
+    return { ok: true };
   });
   ipcMain.handle("chat:compact", () => agent.compactNow());
+  ipcMain.handle("checkpoint:restore", (_e, id) => agent.restoreCheckpoint(id));
   ipcMain.handle("chat:compactCancel", () => agent.cancelCompaction());
   ipcMain.handle("chat:lastPrompt", () => agent.lastUserPrompt());
   ipcMain.handle("app:accent", () => {
@@ -204,7 +276,7 @@ export function registerIpc({ openSettings } = {}) {
       return "";
     }
   });
-  ipcMain.handle("window:openSettings", () => openSettings());
+  ipcMain.handle("window:openSettings", (_e, pane) => openSettings(pane ?? ""));
   ipcMain.handle("chat:abort", () => agent.abort());
 
   ipcMain.handle("dialog:confirm", async (_e, message, detail) => {
@@ -219,20 +291,29 @@ export function registerIpc({ openSettings } = {}) {
     return response === 0;
   });
 
-  ipcMain.handle("dialog:pickFiles", async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle("dialog:pickFiles", async (e) => {
+    const win = winOf(e);
+    const options = {
       properties: ["openFile", "multiSelections"],
       filters: [
         { name: "Документы", extensions: ["pdf", "docx", "md", "txt", "html"] },
         { name: "Изображения", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
-        { name: "Все файлы", extensions: ["*"] },
       ],
-    });
+    };
+    // Parent the dialog to the calling window: without it the native dialog
+    // can open behind the frameless window and looks unresponsive.
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
     return result.canceled ? [] : result.filePaths;
   });
 
-  ipcMain.handle("dialog:pickDir", async () => {
-    const result = await dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"] });
+  ipcMain.handle("dialog:pickDir", async (e) => {
+    const win = winOf(e);
+    const options = { properties: ["openDirectory", "createDirectory"] };
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
     return result.canceled ? "" : result.filePaths[0];
   });
 }
