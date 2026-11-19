@@ -1,6 +1,8 @@
-import { BrowserWindow, Notification, dialog, ipcMain, nativeTheme, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, Notification, dialog, ipcMain, nativeTheme, shell, systemPreferences } from "electron";
+import fs from "node:fs";
 import path from "node:path";
 import * as agent from "./agent.mjs";
+import { mcpStatus } from "./mcp.mjs";
 import { setTrayBusy, bumpUnread } from "./tray-state.mjs";
 
 const pendingQuestions = new Map();
@@ -28,6 +30,18 @@ function syncNativeTheme(config) {
 
 export function registerIpc({ openSettings } = {}) {
   const winOf = (event) => BrowserWindow.fromWebContents(event.sender);
+  const notifyTaskSettled = (win, notice) => {
+    if (notice?.kind !== "backgroundTask") return;
+    if (notice.task?.status !== "done" && notice.task?.status !== "error") return;
+    if (agent.loadConfig().osNotifications === false || !win || win.isFocused()) return;
+    bumpUnread();
+    const notification = new Notification({
+      title: notice.task.status === "error" ? "granka — задача с ошибкой" : "granka — фоновая задача",
+      body: `${notice.task.agent}: ${notice.task.description}`.replace(/\s+/g, " ").slice(0, 160),
+    });
+    notification.on("click", () => { win.show(); win.focus(); });
+    notification.show();
+  };
   ipcMain.handle("tray:busy", (_e, value) => setTrayBusy(value));
   ipcMain.handle("window:minimize", (e) => winOf(e)?.minimize());
   ipcMain.handle("window:toggleMaximize", (e) => {
@@ -68,6 +82,17 @@ export function registerIpc({ openSettings } = {}) {
   ipcMain.handle("sessions:duplicate", (_e, id) => agent.duplicateSession(id));
   ipcMain.handle("sessions:assign", (_e, id, projectId) => agent.assignSessionToProject(id, projectId));
   ipcMain.handle("sessions:export", (_e, ids) => agent.exportSessions(ids));
+  ipcMain.handle("sessions:exportFile", async (e, ids) => {
+    const result = agent.exportSessions(ids);
+    if (!result.ok) return result;
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const picked = win
+      ? await dialog.showSaveDialog(win, { defaultPath: "granka-session.md", filters: [{ name: "Markdown", extensions: ["md"] }] })
+      : await dialog.showSaveDialog({ defaultPath: "granka-session.md", filters: [{ name: "Markdown", extensions: ["md"] }] });
+    if (picked.canceled || !picked.filePath) return { ok: false, error: "отменено" };
+    fs.writeFileSync(picked.filePath, result.text);
+    return { ok: true, path: picked.filePath };
+  });
   ipcMain.handle("sessions:reveal", (_e, id) => {
     const info = agent.revealSession(id);
     if (info.ok) shell.showItemInFolder(info.path);
@@ -104,11 +129,25 @@ export function registerIpc({ openSettings } = {}) {
   ipcMain.handle("projects:rules", (_e, id) => agent.getProjectRules(id));
   ipcMain.handle("projects:rulesForPath", (_e, dir) => agent.rulesForPath(dir));
   ipcMain.handle("projects:saveRules", (_e, id, text) => agent.saveProjectRules(id, text));
+  ipcMain.handle("memory:get", () => agent.getMemory());
+  ipcMain.handle("memory:save", (_e, text) => agent.saveMemory(text));
+  ipcMain.handle("projects:memory", (_e, id) => agent.getProjectMemory(id));
+  ipcMain.handle("projects:saveMemory", (_e, id, text) => agent.saveProjectMemory(id, text));
 
   ipcMain.handle("subagents:list", async () => {
     const { subagentList } = await import("./subagents.mjs");
-    return subagentList();
+    return subagentList(agent.AGENT_DIR);
   });
+  ipcMain.handle("subagents:reveal", () => {
+    const dir = path.join(agent.AGENT_DIR, "subagents");
+    fs.mkdirSync(dir, { recursive: true });
+    shell.openPath(dir);
+    return { ok: true, path: dir };
+  });
+  ipcMain.handle("tasks:list", () => agent.listBackgroundTasks());
+  ipcMain.handle("tasks:cancel", (_e, id) => agent.cancelBackgroundTask(id));
+  ipcMain.handle("mcp:status", () => mcpStatus(agent.loadConfig().mcpServers));
+  ipcMain.handle("chat:contextBreakdown", () => agent.contextBreakdown());
 
   ipcMain.handle("commands:list", () => ({
     prompts: agent.listPrompts(),
@@ -151,18 +190,23 @@ export function registerIpc({ openSettings } = {}) {
           setTimeout(() => {
             if (!pendingQuestions.has(id)) return;
             pendingQuestions.delete(id);
+            // The renderer still shows the modal: dismiss it, otherwise the
+            // dialog lingers with no way to answer (the promise is settled).
+            try { e.sender.send("chat:question", { id, closed: true }); } catch {}
             resolve("");
           }, 300000);
         }),
-      emit: (notice) => {
-        if (!e.sender.isDestroyed()) e.sender.send("chat:notice", notice);
-      },
+      emit: (notice) => forwardNotice(notice),
     });
+    const forwardNotice = (notice) => {
+      if (!e.sender.isDestroyed()) e.sender.send("chat:notice", notice);
+      notifyTaskSettled(win, notice);
+    };
     const result = await agent.ask(
       question,
       (delta) => { if (!e.sender.isDestroyed()) e.sender.send("chat:delta", delta); },
       (tool) => { if (!e.sender.isDestroyed()) e.sender.send("chat:tool", tool); },
-      (notice) => { if (!e.sender.isDestroyed()) e.sender.send("chat:notice", notice); },
+      (notice) => forwardNotice(notice),
       Array.isArray(attachments) ? attachments : [],
       (thinking) => { if (!e.sender.isDestroyed()) e.sender.send("chat:thinking", thinking); },
     );
@@ -170,10 +214,15 @@ export function registerIpc({ openSettings } = {}) {
     const wantsNotify = agent.loadConfig().osNotifications !== false;
     if (wantsNotify && win && !win.isFocused() && result.ok) {
       bumpUnread();
-      new Notification({
+      const notification = new Notification({
         title: "granka",
         body: (result.text || "готово").replace(/\s+/g, " ").slice(0, 160),
-      }).show();
+      });
+      notification.on("click", () => {
+        win?.show();
+        win?.focus();
+      });
+      notification.show();
     }
     return result;
   }
@@ -269,6 +318,8 @@ export function registerIpc({ openSettings } = {}) {
   ipcMain.handle("checkpoint:restore", (_e, id) => agent.restoreCheckpoint(id));
   ipcMain.handle("chat:compactCancel", () => agent.cancelCompaction());
   ipcMain.handle("chat:lastPrompt", () => agent.lastUserPrompt());
+  ipcMain.handle("app:version", () => app.getVersion());
+  ipcMain.handle("app:wallpaper", (_e, target) => agent.wallpaperDataUrl(target));
   ipcMain.handle("app:accent", () => {
     try {
       const value = systemPreferences.getAccentColor?.().replace("#", "") ?? "";
@@ -280,10 +331,10 @@ export function registerIpc({ openSettings } = {}) {
   ipcMain.handle("window:openSettings", (_e, pane) => openSettings(pane ?? ""));
   ipcMain.handle("chat:abort", () => agent.abort());
 
-  ipcMain.handle("dialog:confirm", async (_e, message, detail) => {
+  ipcMain.handle("dialog:confirm", async (_e, message, detail, confirmLabel = "Удалить") => {
     const { response } = await dialog.showMessageBox({
       type: "warning",
-      buttons: ["Удалить", "Отмена"],
+      buttons: [confirmLabel, "Отмена"],
       defaultId: 1,
       cancelId: 1,
       message: String(message ?? "Подтвердите действие"),
@@ -307,6 +358,23 @@ export function registerIpc({ openSettings } = {}) {
       ? await dialog.showOpenDialog(win, options)
       : await dialog.showOpenDialog(options);
     return result.canceled ? [] : result.filePaths;
+  });
+
+  // Background image: images-only and FIRST, so PNG/JPG are visible
+  // immediately (the attachments dialog starts on "Documents" and hides them).
+  ipcMain.handle("dialog:pickImage", async (e) => {
+    const win = winOf(e);
+    const options = {
+      properties: ["openFile"],
+      filters: [
+        { name: "Изображения", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"] },
+        { name: "Все файлы", extensions: ["*"] },
+      ],
+    };
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    return result.canceled ? "" : result.filePaths[0];
   });
 
   ipcMain.handle("dialog:pickDir", async (e) => {

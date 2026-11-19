@@ -108,12 +108,21 @@ const send = (channel) => {
   win?.webContents.send(channel);
 };
 
+const WINDOW_STATE_FILE = path.join(os.homedir(), ".granka", "window.json");
+function savedBounds() {
+  try {
+    const data = JSON.parse(fs.readFileSync(WINDOW_STATE_FILE, "utf8"));
+    if (Number.isFinite(data.width) && Number.isFinite(data.height)) return data;
+  } catch {}
+  return null;
+}
+
 function createMainWindow() {
+  const saved = savedBounds();
   mainWindow = new BrowserWindow({
-    width: 1120,
-    height: 780,
+    ...(saved ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height } : { width: 1120, height: 780 }),
     // everything must stay visible: sidebar + reading column + toolbar controls
-    minWidth: 900,
+    minWidth: 760,
     minHeight: 560,
     title: "granka",
     backgroundColor: "#202124",
@@ -128,9 +137,20 @@ function createMainWindow() {
   });
   mainWindow.setMenuBarVisibility(!isMac);
   guardWindow(mainWindow);
+  mainWindow.on("close", () => {
+    try {
+      fs.mkdirSync(path.dirname(WINDOW_STATE_FILE), { recursive: true });
+      fs.writeFileSync(WINDOW_STATE_FILE, JSON.stringify({ ...mainWindow.getBounds(), zoom: mainWindow.webContents.zoomFactor }), { mode: 0o600 });
+    } catch {}
+  });
   mainWindow.on("closed", () => {
     mainWindow = undefined;
   });
+  if (saved?.zoom && Number.isFinite(saved.zoom)) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      mainWindow.webContents.setZoomFactor(saved.zoom);
+    });
+  }
   mainWindow.loadFile(renderer("index.html"));
 }
 
@@ -141,10 +161,10 @@ function openSettings(pane = "") {
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 560,
-    height: 620,
-    minWidth: 460,
-    minHeight: 420,
+    width: 720,
+    height: 640,
+    minWidth: 600,
+    minHeight: 480,
     title: "Настройки",
     parent: mainWindow,
     backgroundColor: "#202124",
@@ -174,10 +194,15 @@ Menu.setApplicationMenu(
       label: "Файл",
       submenu: [
         { label: "Новый диалог", accelerator: "CmdOrCtrl+N", click: () => send("menu:new-chat") },
-        { label: "Все диалоги", accelerator: "CmdOrCtrl+Shift+S", click: () => send("menu:all-sessions") },
-        { type: "separator" },
-        { label: "Настройки…", accelerator: "CmdOrCtrl+,", click: openSettings },
-        ...(isMac ? [] : [{ type: "separator" }, { role: "quit" }]),
+        { label: "Все диалоги", accelerator: "CmdOrCtrl+Shift+L", click: () => send("menu:all-sessions") },
+        ...(isMac
+          ? []
+          : [
+              { type: "separator" },
+              { label: "Настройки…", accelerator: "CmdOrCtrl+,", click: openSettings },
+              { type: "separator" },
+              { role: "quit" },
+            ]),
       ],
     },
     { role: "editMenu" },
@@ -186,12 +211,18 @@ Menu.setApplicationMenu(
       submenu: [
         { label: "Боковая панель", accelerator: "CmdOrCtrl+B", click: () => send("menu:toggle-sidebar") },
         { type: "separator" },
+        { label: "Аналитика", accelerator: "CmdOrCtrl+Alt+A", click: () => send("menu:stats") },
+        { label: "Проект", accelerator: "CmdOrCtrl+Alt+P", click: () => send("menu:project") },
+        { label: "Сжать контекст", accelerator: "CmdOrCtrl+Alt+C", click: () => send("menu:compact") },
+        { type: "separator" },
         { role: "resetZoom" },
         { role: "zoomIn" },
         { role: "zoomOut" },
         { type: "separator" },
-        { role: "toggleDevTools" },
-        { role: "reload" },
+        // DevTools/reload would lose streaming state: developer-only builds.
+        ...(!app.isPackaged
+          ? [{ role: "toggleDevTools" }, { role: "reload" }]
+          : []),
       ],
     },
     { role: "windowMenu" },

@@ -3,7 +3,7 @@
 # Требует sudo — запускать вручную.
 set -euo pipefail
 
-REPO="${GRANKA_REPO_DIR:-$HOME/pacman-myapp}"
+REPO="${GRANKA_REPO_DIR:-/srv/myapp-repo}"
 PKG="$(ls -1 "$REPO"/granka-*.pkg.tar.zst 2>/dev/null | tail -1)"
 [ -n "$PKG" ] || { echo "Пакет не найден в $REPO — сначала запустите packaging/build-arch.sh"; exit 1; }
 

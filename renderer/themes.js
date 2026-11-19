@@ -1,4 +1,10 @@
 (function () {
+// Theme fonts stay in one visual family: clean sans for UI, monospaced for
+// code. Serif/mono-as-UI presets read as handwritten or typewriter-like and
+// give an uneven grid in a dense interface.
+const UI_FONT = '"Granka Inter", sans-serif';
+const MONO_FONT = '"Granka Mono", monospace';
+
 // Theme presets. Palettes come from the published colour systems of each
 // project (Catppuccin, Rosé Pine, Nord, Tokyo Night, Gruvbox, Solarized),
 // mapped onto granka's semantic tokens. Contrast of `text2` on `bg` is kept
@@ -8,20 +14,32 @@ const THEMES = {
     name: "Granka",
     mode: "light",
     tokens: {
-      // soft graphite paper: white but not sterile, cool shadow tones
-      bg: "#fdfdfe", sidebar: "#f4f5f8", chrome: "#f8f9fb", text: "#16181d", text2: "#5c6472",
-      separator: "rgba(22,24,29,0.10)", fill: "rgba(120,130,150,0.10)", fill2: "rgba(120,130,150,0.18)",
-      accent: "#0a84ff", danger: "#d92d20", code: "#f2f4f7", rowActive: "rgba(120,130,150,0.16)",
+      // DESIGN.md: clean white canvas, Apple ladder, muted slate-blue accent.
+      // text2 is #828287 in the spec (3.82:1, known gap §9); darkened to
+      // #76767b so secondary text stays AA on white.
+      bg: "#ffffff", sidebar: "#fbfbfd", chrome: "#f5f5f7", text: "#1d1d1f", text2: "#76767b",
+      separator: "rgba(0,0,0,0.18)", fill: "rgba(0,0,0,0.07)", fill2: "rgba(0,0,0,0.10)",
+      accent: "#576992", danger: "#b93636", code: "#17171c", rowActive: "rgba(87,105,146,0.10)",
+    },
+    design: {
+      radiusXs: "8px", radiusSm: "8px", radiusMd: "14px", radiusCtl: "8px", radiusPill: "999px",
+      fontUi: UI_FONT,
+      shadow: "0 0px 1px rgba(30,30,40,0.031), 0 1px 3px rgba(30,30,40,0.022)",
     },
   },
   "granka-dark": {
     name: "Granka",
     mode: "dark",
     tokens: {
-      // graphite with a warm terracotta accent
-      bg: "#202124", sidebar: "#1b1c1f", chrome: "#242528", text: "#e8eaed", text2: "#9aa0a6",
-      separator: "rgba(232,234,237,0.12)", fill: "rgba(232,234,237,0.08)", fill2: "rgba(232,234,237,0.14)",
-      accent: "#d7473f", danger: "#ff6b61", code: "#17181b", rowActive: "rgba(232,234,237,0.12)",
+      // DESIGN.md dark: pure black canvas, graphite surfaces, muted slate accent.
+      bg: "#131316", sidebar: "#1a1a1e", chrome: "#232329", text: "#f5f5f7", text2: "#8c8c90",
+      separator: "rgba(255,255,255,0.18)", fill: "rgba(255,255,255,0.09)", fill2: "rgba(255,255,255,0.14)",
+      accent: "#4f5d7f", danger: "#b93636", code: "#101014", rowActive: "rgba(79,93,127,0.22)",
+    },
+    design: {
+      radiusXs: "8px", radiusSm: "8px", radiusMd: "14px", radiusCtl: "8px", radiusPill: "999px",
+      fontUi: UI_FONT,
+      shadow: "0 0px 1px rgba(0,0,0,0.172), 0 1px 3px rgba(0,0,0,0.120)",
     },
   },
   // Brand palettes from getdesign.md design analyses. `design` overrides
@@ -34,7 +52,7 @@ const THEMES = {
       separator: "#e6dfd8", fill: "rgba(108,106,100,0.12)", fill2: "rgba(108,106,100,0.2)",
       accent: "#cc785c", danger: "#c64545", code: "#f5f0e8", rowActive: "rgba(204,120,92,0.16)",
     },
-    design: { radiusXs: "4px", radiusSm: "6px", radiusMd: "8px", radiusCtl: "8px", radiusPill: "999px", fontUi: 'Georgia, "Times New Roman", serif' },
+    design: { radiusXs: "4px", radiusSm: "6px", radiusMd: "8px", radiusCtl: "8px", radiusPill: "999px", fontUi: UI_FONT },
   },
   spotify: {
     name: "Spotify",
@@ -54,7 +72,7 @@ const THEMES = {
       separator: "#e5e5e5", fill: "rgba(17,17,17,0.08)", fill2: "rgba(17,17,17,0.14)",
       accent: "#111111", danger: "#d30005", code: "#f5f5f5", rowActive: "rgba(17,17,17,0.1)",
     },
-    design: { radiusXs: "0px", radiusSm: "10px", radiusMd: "14px", radiusCtl: "9999px", radiusPill: "9999px", fontUi: 'Helvetica, Arial, system-ui, sans-serif' },
+    design: { radiusXs: "0px", radiusSm: "10px", radiusMd: "14px", radiusCtl: "9999px", radiusPill: "9999px", fontUi: UI_FONT },
   },
   cursor: {
     name: "Cursor",
@@ -64,7 +82,7 @@ const THEMES = {
       separator: "#e6e5e0", fill: "rgba(38,37,30,0.08)", fill2: "rgba(38,37,30,0.14)",
       accent: "#f54e00", danger: "#cf2d56", code: "#ffffff", rowActive: "rgba(245,78,0,0.12)",
     },
-    design: { radiusXs: "4px", radiusSm: "6px", radiusMd: "8px", radiusCtl: "6px", radiusPill: "999px", shadow: "none" },
+    design: { radiusXs: "4px", radiusSm: "6px", radiusMd: "8px", radiusCtl: "6px", radiusPill: "999px", radiusL: "12px", shadow: "none" },
   },
   discord: {
     name: "Discord",
@@ -84,7 +102,7 @@ const THEMES = {
       separator: "#e0e0e0", fill: "rgba(22,22,22,0.08)", fill2: "rgba(22,22,22,0.14)",
       accent: "#0f62fe", danger: "#da1e28", code: "#f4f4f4", rowActive: "rgba(15,98,254,0.12)",
     },
-    design: { radiusXs: "0px", radiusSm: "0px", radiusMd: "2px", radiusCtl: "0px", radiusPill: "0px", shadow: "none", fontUi: '"IBM Plex Sans", system-ui, sans-serif' },
+    design: { radiusXs: "0px", radiusSm: "0px", radiusMd: "2px", radiusCtl: "0px", radiusPill: "0px", radiusL: "2px", shadow: "none", fontUi: UI_FONT },
   },
   opencode: {
     name: "OpenCode",
@@ -94,7 +112,7 @@ const THEMES = {
       separator: "rgba(15,0,0,0.12)", fill: "rgba(32,29,29,0.08)", fill2: "rgba(32,29,29,0.14)",
       accent: "#007aff", danger: "#ff3b30", code: "#f1eeee", rowActive: "rgba(0,122,255,0.12)",
     },
-    design: { radiusXs: "4px", radiusSm: "4px", radiusMd: "4px", radiusCtl: "4px", radiusPill: "4px", shadow: "none", fontUi: '"JetBrains Mono", ui-monospace, monospace' },
+    design: { radiusXs: "4px", radiusSm: "4px", radiusMd: "4px", radiusCtl: "4px", radiusPill: "4px", radiusL: "6px", shadow: "none", fontUi: UI_FONT },
   },
   "dell-1996": {
     name: "Dell (1996)",
@@ -104,7 +122,7 @@ const THEMES = {
       separator: "#000000", fill: "rgba(0,0,0,0.08)", fill2: "rgba(0,0,0,0.14)",
       accent: "#e91d2a", danger: "#e91d2a", code: "#f5f5f5", rowActive: "rgba(233,29,42,0.1)",
     },
-    design: { radiusXs: "0px", radiusSm: "0px", radiusMd: "0px", radiusCtl: "0px", radiusPill: "0px", shadow: "none", fontUi: 'Georgia, "Times New Roman", serif' },
+    design: { radiusXs: "0px", radiusSm: "0px", radiusMd: "0px", radiusCtl: "0px", radiusPill: "0px", radiusL: "0px", shadow: "none", fontUi: UI_FONT },
   },
   opencodeDark: {
     name: "OpenCode Dark",
@@ -114,7 +132,7 @@ const THEMES = {
       separator: "rgba(253,252,252,0.12)", fill: "rgba(253,252,252,0.08)", fill2: "rgba(253,252,252,0.14)",
       accent: "#007aff", danger: "#ff3b30", code: "#302c2c", rowActive: "rgba(0,122,255,0.16)",
     },
-    design: { radiusXs: "4px", radiusSm: "4px", radiusMd: "4px", radiusCtl: "4px", radiusPill: "4px", shadow: "none", fontUi: '"JetBrains Mono", ui-monospace, monospace' },
+    design: { radiusXs: "4px", radiusSm: "4px", radiusMd: "4px", radiusCtl: "4px", radiusPill: "4px", radiusL: "6px", shadow: "none", fontUi: UI_FONT },
   },
   cursorDark: {
     name: "Cursor Dark",
@@ -124,7 +142,7 @@ const THEMES = {
       separator: "rgba(237,237,235,0.12)", fill: "rgba(237,237,235,0.08)", fill2: "rgba(237,237,235,0.14)",
       accent: "#f54e00", danger: "#cf2d56", code: "#232320", rowActive: "rgba(245,78,0,0.16)",
     },
-    design: { radiusXs: "4px", radiusSm: "6px", radiusMd: "8px", radiusCtl: "6px", radiusPill: "999px", shadow: "none" },
+    design: { radiusXs: "4px", radiusSm: "6px", radiusMd: "8px", radiusCtl: "6px", radiusPill: "999px", radiusL: "12px", shadow: "none" },
   },
   apple: {
     name: "Apple",
@@ -134,7 +152,7 @@ const THEMES = {
       separator: "#e0e0e0", fill: "rgba(29,29,31,0.08)", fill2: "rgba(29,29,31,0.14)",
       accent: "#0066cc", danger: "#d70015", code: "#f5f5f7", rowActive: "rgba(0,102,204,0.12)",
     },
-    design: { radiusXs: "4px", radiusSm: "8px", radiusMd: "12px", radiusCtl: "9999px", radiusPill: "9999px", fontUi: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif' },
+    design: { radiusXs: "4px", radiusSm: "8px", radiusMd: "12px", radiusCtl: "9999px", radiusPill: "9999px", fontUi: UI_FONT },
   },
   appleDark: {
     name: "Apple Dark",
@@ -146,7 +164,7 @@ const THEMES = {
       separator: "rgba(255,255,255,0.14)", fill: "rgba(255,255,255,0.08)", fill2: "rgba(255,255,255,0.14)",
       accent: "#2997ff", danger: "#ff453a", code: "#2c2c2e", rowActive: "rgba(41,151,255,0.16)",
     },
-    design: { radiusXs: "4px", radiusSm: "8px", radiusMd: "12px", radiusCtl: "9999px", radiusPill: "9999px", fontUi: '-apple-system, BlinkMacSystemFont, system-ui, sans-serif' },
+    design: { radiusXs: "4px", radiusSm: "8px", radiusMd: "12px", radiusCtl: "9999px", radiusPill: "9999px", fontUi: UI_FONT },
   },
   spacex: {
     name: "SpaceX",
@@ -156,7 +174,7 @@ const THEMES = {
       separator: "#3a3a3f", fill: "rgba(255,255,255,0.08)", fill2: "rgba(255,255,255,0.14)",
       accent: "#5aa9ff", danger: "#ff453a", code: "#0a0a0a", rowActive: "rgba(90,169,255,0.16)",
     },
-    design: { radiusXs: "4px", radiusSm: "8px", radiusMd: "16px", radiusCtl: "9999px", radiusPill: "32px", fontUi: '"Arial Narrow", Arial, sans-serif' },
+    design: { radiusXs: "4px", radiusSm: "8px", radiusMd: "16px", radiusCtl: "9999px", radiusPill: "32px", fontUi: UI_FONT },
   },
 };
 
@@ -208,6 +226,44 @@ const RADIUS_DEFAULTS = {
   radiusMd: "10px",   // panels: composer, popover, cards
   radiusCtl: "6px",   // every interactive control: buttons, rows, inputs
   radiusPill: "999px",// chips and tags
+  radiusL: "20px",    // modals
+};
+
+// Blend two hex colours (t = share of `to`).
+function mixHex(from, to, t) {
+  const parse = (hex) => {
+    let v = String(hex).replace("#", "");
+    if (v.length === 3) v = v.split("").map((c) => c + c).join("");
+    return [0, 2, 4].map((o) => parseInt(v.slice(o, o + 2), 16));
+  };
+  const a = parse(from), b = parse(to);
+  return "#" + a.map((c, i) => Math.round(c + (b[i] - c) * t).toString(16).padStart(2, "0")).join("");
+}
+
+// Nudge a colour toward `anchor` until it reaches `target` contrast on `bg`.
+function ensureContrast(fg, bg, anchor, target = 4.5) {
+  if (!/^[0-9a-f]{6}$/i.test(String(fg).slice(1)) || !/^[0-9a-f]{6}$/i.test(String(bg).slice(1))) return fg;
+  let value = fg;
+  for (let step = 0; step <= 20; step++) {
+    if (contrastRatio(value, bg) >= target) return value;
+    value = mixHex(fg, anchor, step / 20);
+  }
+  return value;
+}
+
+const SHADOWS = {
+  light: [
+    "0 0px 1px rgba(30,30,40,0.018), 0 1px 3px rgba(30,30,40,0.012)",
+    "0 2px 3px rgba(30,30,40,0.024), 0 6px 11px rgba(30,30,40,0.017)",
+    "0 4px 8px rgba(30,30,40,0.030), 0 12px 22px rgba(30,30,40,0.021)",
+    "0 10px 16px rgba(30,30,40,0.038), 0 23px 38px rgba(30,30,40,0.026)",
+  ],
+  dark: [
+    "0 0px 1px rgba(0,0,0,0.100), 0 1px 3px rgba(0,0,0,0.070)",
+    "0 2px 3px rgba(0,0,0,0.140), 0 6px 11px rgba(0,0,0,0.098)",
+    "0 4px 8px rgba(0,0,0,0.180), 0 12px 22px rgba(0,0,0,0.126)",
+    "0 10px 16px rgba(0,0,0,0.230), 0 23px 38px rgba(0,0,0,0.160)",
+  ],
 };
 
 function themeVars(id, systemAccent) {
@@ -217,8 +273,36 @@ function themeVars(id, systemAccent) {
   tokens.accentText = accentTextFor(tokens.accent);
   // Ink that stays readable on the danger fill (window close button).
   tokens.onDanger = accentTextFor(tokens.danger);
-  // Semantic tokens every theme must provide but individual palettes omit:
-  tokens.success = theme.mode === "dark" ? "#4caf7d" : "#157347";
+  // Readable inks for small text of a semantic colour on the canvas:
+  // accent/danger themselves fail AA as body text in several themes.
+  tokens.accentInk = ensureContrast(tokens.accent, tokens.bg, tokens.text, 4.5);
+  tokens.dangerInk = ensureContrast(tokens.danger, tokens.bg, tokens.text, 4.5);
+  // Captions need their own AA step instead of an alpha mix that fails on
+  // light canvases. Start at the old 52% mix and lift only as far as needed.
+  tokens.text3Ink = ensureContrast(mixHex(tokens.text, tokens.bg, 0.48), tokens.bg, tokens.text, 4.5);
+  // Secondary text must also pass AA on filled chips (bg + fill), not only bg.
+  tokens.text2 = ensureContrast(tokens.text2, tokens.bg, tokens.text, 4.6);
+  // Ink for code blocks: derived from the actual code surface, so light
+  // code tones (Claude/Nike/IBM/…) get dark ink instead of white.
+  tokens.codeText = accentTextFor(tokens.code ?? tokens.bg);
+  // Warning was missing entirely (rendered as danger).
+  tokens.warning = theme.mode === "dark" ? "#f0a35e" : "#9a5b00";
+  // Glass and the shadow scale follow the theme instead of staying frozen
+  // to the granka palette in every brand theme.
+  tokens.glassBg = `color-mix(in oklab, ${tokens.bg} 55%, transparent)`;
+  tokens.glassBorder = theme.mode === "dark"
+    ? "rgba(255,255,255,0.175)"
+    : "rgba(255,255,255,0.35)";
+  const scale = SHADOWS[theme.mode] ?? SHADOWS.light;
+  tokens.sh1 = scale[0]; tokens.sh2 = scale[1]; tokens.sh3 = scale[2]; tokens.sh4 = scale[3];
+  // Semantic tokens every theme must provide but individual palettes omit.
+  // Base themes follow DESIGN.md (muted "dusty" semantics in tone with the
+  // slate accent); other palettes keep their previous derived values.
+  tokens.success = (id === "granka-light" || id === "granka-dark")
+    ? "#7d9c65"
+    : theme.mode === "dark" ? "#4caf7d" : "#157347";
+  tokens.successInk = ensureContrast(tokens.success, tokens.bg, tokens.text, 4.5);
+  tokens.warningInk = ensureContrast(tokens.warning, tokens.bg, tokens.text, 4.5);
   // Design geometry/type overrides (radii, fonts) map onto the shared CSS vars.
   const design = theme.design ?? {};
   if (design.fontUi) tokens.font = design.fontUi;
@@ -230,13 +314,18 @@ function themeVars(id, systemAccent) {
   if (design.radiusMd) tokens.radiusMd = design.radiusMd;
   if (design.radiusPill) tokens.radiusPill = design.radiusPill;
   if (design.radiusCtl) tokens.radiusCtl = design.radiusCtl;
+  if (design.radiusL) tokens.radiusL = design.radiusL;
   if (design.shadow) tokens.shadow = design.shadow;
   // Code blocks need visible separation from the background. Brands that ship
   // a deliberate code tone keep it; only a tone indistinguishable from bg is
   // nudged, so dark palettes never lose their code surface.
-  if (theme.mode === "dark" && contrastRatio(tokens.code ?? tokens.bg, tokens.bg) < 1.12) {
-    tokens.code = `color-mix(in oklab, ${tokens.bg} 92%, #ffffff)`;
+  if (theme.mode === "dark" && tokens.code && contrastRatio(tokens.code, tokens.bg) < 1.12) {
+    tokens.code = mixHex(tokens.bg, "#ffffff", 0.08);
   }
+  if (theme.mode === "light" && tokens.code && contrastRatio(tokens.code, tokens.bg) < 1.03) {
+    tokens.code = mixHex(tokens.bg, "#000000", 0.05);
+  }
+  tokens.codeText = accentTextFor(tokens.code ?? tokens.bg);
   if (theme.mode === "dark") {
     // A theme's own shadow (e.g. Spotify's heavy drop) wins over the default.
     if (!design.shadow) tokens.shadow = "0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.08)";

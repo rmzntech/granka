@@ -55,7 +55,7 @@ npm start
 **Arch Linux** — пакет собирается локально и кладётся в свой pacman-репозиторий:
 
 ```bash
-./packaging/build-arch.sh      # пакет + обновление ~/pacman-myapp
+./packaging/build-arch.sh      # пакет + обновление /srv/myapp-repo
 ./packaging/install-arch.sh    # установка (sudo запускает пользователь)
 ```
 

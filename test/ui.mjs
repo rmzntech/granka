@@ -127,6 +127,36 @@ app.whenReady().then(async () => {
     return { skipped: false, activeId: active?.dataset.id, current: currentSessionId, count: rows.length };
   })()`);
 
+  // A tool chip opens its detail and the same chip closes it again (both in
+  // the message flow and inside a history .toolList).
+  const toolToggle = await win.webContents.executeJavaScript(`(() => {
+    const make = () => {
+      const chip = makeToolChip("bash", JSON.stringify({ command: "ls" }), "call-1");
+      chip.__detail.result = "ok";
+      return chip;
+    };
+    const inline = make();
+    document.getElementById("log").append(inline);
+    toggleToolDetail(inline);
+    const openedInline = !!toolDetailOf(inline);
+    toggleToolDetail(inline);
+    const closedInline = !toolDetailOf(inline) && inline.getAttribute("aria-expanded") === "false";
+
+    const list = document.createElement("div");
+    list.className = "toolList";
+    const inList = make();
+    list.append(inList);
+    document.getElementById("log").append(list);
+    toggleToolDetail(inList);
+    const openedList = !!toolDetailOf(inList) && inList.getAttribute("aria-expanded") === "true";
+    toggleToolDetail(inList);
+    const closedList = !toolDetailOf(inList) && !document.querySelector(".toolDetail");
+
+    inline.remove();
+    list.remove();
+    return { openedInline, closedInline, openedList, closedList };
+  })()`);
+
   // sidebar toggle works and is restored afterwards
   const sidebarAfterToggle = await win.webContents.executeJavaScript(`(() => {
     document.getElementById("sidebarToggle").click();
@@ -144,7 +174,7 @@ app.whenReady().then(async () => {
       `projectRules=${projectPane.projectRules} ` +
       `sidebarHidden=${sidebarAfterToggle} active=${highlight.skipped ? "n/a" : highlight.activeId === highlight.current} ` +
       `binding=${binding.rows}/${binding.foreign} menu=${menu.skipped ? "n/a" : menu.items.length} ` +
-      `errors=${errors.length}`,
+      `toolToggle=${Object.values(toolToggle).every(Boolean)} errors=${errors.length}`,
   );
 
   const ok =
@@ -175,6 +205,10 @@ app.whenReady().then(async () => {
     (highlight.skipped || highlight.activeId === highlight.current) &&
     binding.foreign === 0 &&
     (menu.skipped || (menu.items.includes("Дублировать") && menu.items.includes("Удалить"))) &&
+    toolToggle.openedInline &&
+    toolToggle.closedInline &&
+    toolToggle.openedList &&
+    toolToggle.closedList &&
     errors.length === 0;
   if (!ok) {
     console.error("ui smoke failed", {
@@ -191,6 +225,7 @@ app.whenReady().then(async () => {
       projectPane,
       sidebarAfterToggle,
       highlight,
+      toolToggle,
       errors,
     });
   }

@@ -14,37 +14,49 @@ export class McpClient {
     this.seq = 0;
     this.pending = new Map();
     this.tools = null;
+    this.lastError = null;
   }
 
   async connect() {
     if (this.child) return;
     const { command, args = [], env = {} } = this.spec;
     if (!command) throw new Error(`MCP ${this.name}: не указана команда`);
-    this.child = spawn(String(command), args.map(String), {
+    this.lastError = null;
+    const child = spawn(String(command), args.map(String), {
       env: { ...process.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
-    this.child.on("error", (err) => {
+    this.child = child;
+    child.on("error", (err) => {
+      this.lastError = String(err?.message ?? err);
       console.error(`[granka mcp ${this.name}]`, err?.message ?? err);
       this.rejectAll(err);
-      this.child = null;
+      if (this.child === child) this.child = null;
     });
-    this.child.on("exit", () => {
+    child.on("exit", () => {
+      if (this.child !== child) return;
+      this.lastError = "процесс завершился";
       this.child = null;
       this.tools = null;
       this.rejectAll(new Error(`MCP ${this.name}: процесс завершился`));
     });
-    this.child.stderr.on("data", (chunk) => {
+    child.stderr.on("data", (chunk) => {
       console.error(`[granka mcp ${this.name}]`, String(chunk).trim().slice(0, 300));
     });
-    const lines = readline.createInterface({ input: this.child.stdout });
+    const lines = readline.createInterface({ input: child.stdout });
     lines.on("line", (line) => this.onMessage(line));
-    await this.request("initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "granka", version: "0.5" },
-    });
-    this.notify("notifications/initialized", {});
+    try {
+      await this.request("initialize", {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "granka", version: "0.5" },
+      });
+      this.notify("notifications/initialized", {});
+    } catch (err) {
+      this.lastError = String(err?.message ?? err);
+      this.close();
+      throw err;
+    }
   }
 
   onMessage(line) {
@@ -108,8 +120,10 @@ export class McpClient {
   }
 
   close() {
-    try { this.child?.kill(); } catch (err) { console.error("[granka mcp]", err?.message ?? err); }
+    const child = this.child;
     this.child = null;
+    this.tools = null;
+    try { child?.kill(); } catch (err) { console.error("[granka mcp]", err?.message ?? err); }
   }
 }
 
@@ -118,18 +132,32 @@ const clients = new Map();
 export function mcpClients(servers) {
   const wanted = servers && typeof servers === "object" ? servers : {};
   for (const [name, client] of clients) {
-    if (!wanted[name]) {
+    const spec = wanted[name];
+    if (!spec || spec.disabled) {
       client.close();
       clients.delete(name);
     }
   }
   const result = new Map();
   for (const [name, spec] of Object.entries(wanted)) {
-    if (!spec || typeof spec !== "object" || !spec.command) continue;
+    if (!spec || typeof spec !== "object" || !spec.command || spec.disabled) continue;
     if (!clients.has(name)) clients.set(name, new McpClient(name, spec));
     result.set(name, clients.get(name));
   }
   return result;
+}
+
+// Status for the settings UI. Never spawns a server: only reports what is
+// already running in this process, so opening settings stays side-effect free.
+export function mcpStatus(servers) {
+  const out = {};
+  for (const [name, spec] of Object.entries(servers && typeof servers === "object" ? servers : {})) {
+    if (spec?.disabled) { out[name] = "off"; continue; }
+    const client = clients.get(name);
+    out[name] = client?.lastError ? `error: ${String(client.lastError).slice(0, 120)}`
+      : client?.child ? "ok" : "idle";
+  }
+  return out;
 }
 
 // Wrap every MCP tool as a granka custom tool: mcp_<server>_<tool>.
@@ -199,16 +227,20 @@ async function ensureSchemas(servers, onlyName = null, force = false) {
   return cache;
 }
 
-// Thin proxies registered at session start: name + one-line description only.
-// The full input schema is NOT in the context until mcp_search returns it.
+// Proxies registered at session start. Compact input schemas go into the
+// tool definition directly (the schema is already in the on-disk cache), so
+// the model can call the tool without a prior mcp_search round-trip. Big
+// schemas stay out of the context on purpose — mcp_search returns them.
 function proxyTool(serverName, client, tool) {
   const oneLine = String(tool.description ?? "").replace(/\s+/g, " ").trim().slice(0, 90);
+  const schema = tool.inputSchema ?? {};
+  const compact = schema && typeof schema === "object" && JSON.stringify(schema).length <= 2000;
   return {
     name: `mcp_${serverName}_${tool.name}`,
     label: `MCP: ${tool.name}`,
-    description: `MCP ${serverName}/${tool.name}${oneLine ? `: ${oneLine}` : ""}. Аргументы: вызови mcp_search для полной схемы.`,
+    description: `MCP ${serverName}/${tool.name}${oneLine ? `: ${oneLine}` : ""}.${compact ? "" : " Аргументы: вызови mcp_search для полной схемы."}`,
     promptSnippet: `mcp_${serverName}_${tool.name}: MCP ${serverName}`,
-    parameters: { type: "object", properties: {} },
+    parameters: compact ? schema : { type: "object", properties: {} },
     execute: async (_id, params) => {
       const text = await client.callTool(tool.name, params);
       return { content: [{ type: "text", text }], details: { server: serverName } };
@@ -257,8 +289,14 @@ export function mcpSearchTool(servers) {
         }
         writeCache(cache);
       }
+      const enabled = new Set(
+        Object.entries(servers && typeof servers === "object" ? servers : {})
+          .filter(([, spec]) => spec && !spec.disabled)
+          .map(([name]) => name),
+      );
       const hits = [];
       for (const [serverName, tools] of Object.entries(cache)) {
+        if (!enabled.has(serverName)) continue;
         if (params.server && serverName !== params.server) continue;
         for (const tool of tools) {
           const haystack = `${tool.name} ${tool.description ?? ""}`.toLowerCase();

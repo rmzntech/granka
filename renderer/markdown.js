@@ -27,7 +27,7 @@ function highlightCode(code) {
   // Input comes from the already-escaped markdown text: do not escape again,
   // just wrap token spans. Strings appear as &quot;...&quot; / &#39;...&#39;.
   const escaped = code;
-  const tokenPattern = /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/|&quot;.*?&quot;|&#39;.*?&#39;|\b\d[\d_]*(?:\.\d+)?\b)/g;
+  const tokenPattern = /(\/\/[^\n]*|(^|\s)#[^\n]*|\/\*[\s\S]*?\*\/|&quot;.*?&quot;|&#39;.*?&#39;|\b\d[\d_]*(?:\.\d+)?\b)/g;
   const wordPattern = new RegExp("\\b(?:" + KEYWORDS.join("|") + ")\\b", "g");
   const paintWords = (chunk, out) =>
     out + chunk.replace(wordPattern, (word) => '<span class="tok-kw">' + word + "</span>");
@@ -62,7 +62,7 @@ function mdToHtml(source) {
     // Images first, before links eat the bracket part: http(s) only, plus
     // small raster data: URLs (no SVG — XSS vector).
     .replace(/!\[([^\]\n]*)\]\((data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]{100,200000})\)/g, '<img src="$2" alt="$1" loading="lazy" />')
-    .replace(/!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g, '<img src="$2" alt="$1" loading="lazy" />')
+    .replace(/!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer" class="extImg">внешнее изображение: $1</a>')
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 
   const isTableRow = (line) => /^\s*\|?.+\|.*$/.test(line) && line.includes("|");
@@ -104,7 +104,9 @@ function mdToHtml(source) {
   };
 
   const blocks = [];
-  for (const raw of text.split(/\n{2,}/)) {
+  // Lists separated by blank lines stay one list.
+  const joined = text.replace(/\n\n(?=\s*(?:[-*]|\d+\.)\s+)/g, "\n");
+  for (const raw of joined.split(/\n{2,}/)) {
     const block = raw.trim();
     if (!block) continue;
     const stashRef = /^\u0000(\d+)\u0000$/.exec(block);
@@ -134,14 +136,36 @@ function mdToHtml(source) {
     }
 
     const heading = /^(#{1,6})\s+(.*)$/.exec(lines[0]);
-    if (heading && lines.length === 1) {
+    if (heading) {
       blocks.push(`<h${heading[1].length}>${heading[2]}</h${heading[1].length}>`);
+      const rest = lines.slice(1).join("\n").trim();
+      if (rest) blocks.push(`<p>${rest}</p>`);
+      continue;
+    }
+    if (lines.length === 1 && /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[0])) {
+      blocks.push("<hr>");
       continue;
     }
     if (lines.every((line) => /^\s*([-*]|\d+\.)\s+/.test(line))) {
       const tag = /^\s*\d+\./.test(lines[0]) ? "ol" : "ul";
-      const items = lines.map((line) => `<li>${line.replace(/^\s*([-*]|\d+\.)\s+/, "")}</li>`).join("");
-      blocks.push(`<${tag}>${items}</${tag}>`);
+      let level = 0;
+      let html = `<${tag}>`;
+      for (const line of lines) {
+        const indent = (line.match(/^\s*/)[0].length / 2) | 0;
+        while (level < indent) { html += `<${tag}>`; level++; }
+        while (level > indent) { html += `</${tag}>`; level--; }
+        const clean = line.replace(/^\s*([-*]|\d+\.)\s+/, "");
+        const task = /^\[( |x|X)\]\s+/.exec(clean);
+        if (task) {
+          const done = task[1].toLowerCase() === "x";
+          html += `<li class="taskItem"><input type="checkbox" disabled${done ? " checked" : ""} /> ${clean.slice(task[0].length)}</li>`;
+        } else {
+          html += `<li>${clean}</li>`;
+        }
+      }
+      while (level > 0) { html += `</${tag}>`; level--; }
+      html += `</${tag}>`;
+      blocks.push(html);
       continue;
     }
     blocks.push(`<p>${lines.join("<br>")}</p>`);

@@ -50,6 +50,10 @@ const structural = new Set([
   "hair", "dur", "ease", "control", "toolbar-h", "header-h", "sidebar-w", "col", "col-msg",
   "gutter", "scroll-w", "chevron-img", "shadow", "radius-xs", "radius-sm", "radius-md",
   "radius-ctl", "radius-pill",
+  // layout vars owned by JS (toolbar/composer measurement), not by themes
+  "log-pad-b", "composer-overlap",
+  // wallpaper vars owned by settings (backgroundImage/Blur/Dim/Noise/Opacity/Fit)
+  "bg-fit", "bg-opacity", "bg-blur", "bg-dim", "bg-noise",
 ]);
 const missing = [...used].filter((name) => {
   if (structural.has(name)) return false;
@@ -61,8 +65,18 @@ const missing = [...used].filter((name) => {
     "row-active": "rowActive",
     "accent-text": "accentText",
     "on-danger": "onDanger",
-    "text-3": null, // derived from text in applyTheme
+    "code-text": "codeText",
+    "text-3": "text3Ink",
     success: "success",
+    "success-ink": "successInk",
+    "accent-ink": "accentInk",
+    "danger-ink": "dangerInk",
+    warning: "warning",
+    "warning-ink": "warningInk",
+    "glass-bg": "glassBg",
+    "glass-border": "glassBorder",
+    sh1: "sh1", sh2: "sh2", sh3: "sh3", sh4: "sh4",
+    "radius-l": "radiusL",
   };
   if (name in aliases) {
     const alias = aliases[name];
@@ -92,11 +106,12 @@ const selectorToken = (selector) => {
 
 const components = {
   "bubble (.msg.user .text)": ".msg.user .text",
-  "composer (.composerBox)": ".composerBox",
+  "composer (#composer)": "#composer",
   "segment (.segment)": ".segment",
   "send (.prominentBtn)": ".prominentBtn",
   "chip (.tool)": ".tool",
   "popover (#popover)": "#popover",
+  "modal (.questionDialog)": ".questionDialog",
 };
 
 const matrix = {};

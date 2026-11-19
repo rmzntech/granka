@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Arch package and drops it into the local pacman repo (~/pacman-myapp).
+# Builds the Arch package and drops it into the local pacman repo (/srv/myapp-repo).
 # No sudo needed: makepkg runs as the current user; installing is a separate step.
 set -euo pipefail
 
@@ -49,6 +49,11 @@ tar -I 'zstd -T6 -19' -cf "$ROOT/packaging/arch/granka-$VERSION.tar.zst" -C "$ST
 echo "==> building package (makepkg)"
 ( cd "$ROOT/packaging/arch" && makepkg -f )
 
+# makepkg names the artefact after pkgver AND pkgrel, and pkgrel changes on a
+# rebuild of the same version — read the name instead of assuming "-1".
+BUILT="$(ls -t "$ROOT/packaging/arch"/granka-"$VERSION"-*.pkg.tar.zst | head -1)"
+BUILT_NAME="$(basename "$BUILT")"
+
 # makepkg распаковывает tarball (~226 МБ с prod node_modules) в src/ и pkg/,
 # но не чистит за собой: раньше там копились все версии (3.8 ГБ).
 # После успешной сборки удаляем распакованные копии всех версий.
@@ -58,21 +63,24 @@ echo "==> publishing to local repo $REPO"
 mkdir -p "$REPO"
 # Старый пакет в репозитории может принадлежать root (сборка через sudo) —
 # cp не перезапишет root-owned файл. Удаляем его сначала (ACL на каталог позволяет).
-rm -f "$REPO"/granka-"$VERSION"-*.pkg.tar.zst
-cp "$ROOT/packaging/arch/"granka-"$VERSION"-*.pkg.tar.* "$REPO/"
-( cd "$REPO" && repo-add -q myapp.db.tar.gz granka-"$VERSION"-*.pkg.tar.zst )
-repo-add -n -q "$REPO/myapp.db.tar.gz" "$REPO/"granka-"$VERSION"-*.pkg.tar.zst 2>/dev/null || true
-
-# Правило репозитория (/srv/myapp-repo/AGENTS.md): только две версии пакета.
+# Only this exact artefact: a glob over pkgver would also delete the previous
+# pkgrel, which is the rollback copy the repo is supposed to keep.
+rm -f "$REPO/$BUILT_NAME"
+cp "$BUILT" "$REPO/"
+# Правило репозитория (/srv/myapp-repo/AGENTS.md): только две версии пакета
+# и база, пересозданная с помощью repo-add из обоих файлов.
 ( cd "$REPO" && ls -t granka-*.pkg.tar.zst 2>/dev/null | tail -n +3 | xargs -r rm -f )
-rm -f "$REPO"/*.old
+rm -f "$REPO"/myapp.db.tar.gz "$REPO"/myapp.files.tar.gz "$REPO"/*.old
+( cd "$REPO" && repo-add -q myapp.db.tar.gz granka-*.pkg.tar.zst )
 rm -rf "$STAGE"
 
 # Старые артефакты в packaging/arch/ больше не нужны (они в репозитории),
 # включая прежний формат tarball (.tar.gz) текущей версии.
+# grep возвращает 1, когда удалять нечего; с pipefail это рвало сборку после
+# успешной публикации пакета.
 ls -t "$ROOT/packaging/arch"/granka-*.tar.* "$ROOT/packaging/arch"/granka-*.pkg.tar.* 2>/dev/null \
-  | grep -v "granka-$VERSION.tar.zst" | grep -v "granka-$VERSION-.*pkg.tar.zst" | xargs -r rm -f
+  | grep -v "granka-$VERSION.tar.zst" | grep -v "$BUILT_NAME" | xargs -r rm -f || true
 
 echo
-echo "package: $REPO/granka-$VERSION-1-x86_64.pkg.tar.zst"
+echo "package: $REPO/$BUILT_NAME"
 ls -la "$REPO"

@@ -108,7 +108,7 @@ MONO_MEDIA.addEventListener("change", () => {
 });
 
 async function applyAccent() {
-  systemAccent = (await granka.accentColor()) || "#0a84ff";
+  systemAccent = (await granka.accentColor()) || "";
   applyTheme();
 }
 
@@ -217,16 +217,36 @@ function toast(message, { error = false, action } = {}) {
   close.setAttribute("aria-label", "Закрыть сообщение");
   close.addEventListener("click", () => node.remove());
   node.append(close);
-  $("toasts").append(node);
-  const TOAST_LIFETIME = { ok: 4000, error: 9000 };
-  const lifetime = error ? TOAST_LIFETIME.error : TOAST_LIFETIME.ok;
+  const stack = $("toasts");
+  while (stack.children.length >= 3) stack.firstElementChild?.remove();
+  stack.append(node);
   const dismiss = () => {
     node.classList.add("isLeaving");
     setTimeout(() => node.remove(), 240);
   };
-  setTimeout(() => {
-    if (document.body.contains(node)) dismiss();
-  }, lifetime);
+  // Errors and toasts with an action stay until dismissed: their content is
+  // the recovery path, so a timer can remove the only way forward.
+  if (!error && !action) {
+    let remaining = 4000;
+    let startedAt = Date.now();
+    let timer = null;
+    const arm = () => {
+      startedAt = Date.now();
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (document.body.contains(node)) dismiss();
+      }, remaining);
+    };
+    const pause = () => {
+      clearTimeout(timer);
+      remaining = Math.max(0, remaining - (Date.now() - startedAt));
+    };
+    node.addEventListener("pointerenter", pause);
+    node.addEventListener("pointerleave", arm);
+    node.addEventListener("focusin", pause);
+    node.addEventListener("focusout", arm);
+    arm();
+  }
   return dismiss;
 }
 
@@ -239,11 +259,12 @@ function fail(message) {
   } else if (/модел|model/.test(lower)) {
     action = { label: "Выбрать модель", run: () => openModelPopover() };
   }
-  toast(String(message ?? "Неизвестная ошибка"), { error: true, action });
+  toast(String(message ?? "Не удалось выполнить действие. Повторите попытку"), { error: true, action });
 }
 
 function setBusy(value) {
   busy = value;
+  log.setAttribute("aria-busy", String(value));
   $("stop").hidden = !value;
   $("send").disabled = false; // stays usable: while busy it queues a follow-up
   $("send").title = value ? "Поставить в очередь (Enter)" : "Отправить (Enter)";
@@ -253,11 +274,30 @@ function setBusy(value) {
 
 function syncQueueBadge() {
   renderActivity();
+  const badge = $("queueBadge");
+  if (badge) {
+    badge.hidden = queued === 0;
+    badge.textContent = String(queued);
+  }
+
 }
 
 function formatTokens(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
 }
+
+// Russian plural: plural(5, ["диалог", "диалога", "диалогов"]) -> "5 диалогов"
+function plural(n, forms) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  const form = mod10 === 1 && mod100 !== 11 ? forms[0]
+    : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? forms[1]
+    : forms[2];
+  return `${n} ${form}`;
+}
+
+const LEVEL_RU = { off: "выкл", minimal: "мин", low: "низк", medium: "сред", high: "выс", xhigh: "макс", max: "макс" };
+function levelRu(level) { return LEVEL_RU[level] ?? level; }
 
 function showContext(context) {
   const meter = $("ctx");
@@ -267,11 +307,61 @@ function showContext(context) {
     return;
   }
   const percent = Math.min(100, Math.max(0, Math.round(context.percent)));
+  const warn = percent >= (config.compactionThreshold ?? 80);
   meter.textContent = `${percent}%`;
-  meter.title = context.tokens
+  meter.classList.toggle("isWarn", warn);
+  meter.setAttribute("aria-label", warn ? `Контекст: ${percent}%, почти полон` : `Контекст: ${percent}%`);
+  const tokens = context.tokens
     ? `контекст ${formatTokens(context.tokens)} из ${formatTokens(context.window)} токенов${context.estimated ? " (оценка)" : ""}`
     : "заполнение контекста";
+  meter.title = warn ? `${tokens} · почти полон, клик: сжать` : tokens;
 }
+
+$("ctx").addEventListener("click", async () => {
+  if (!$("ctx").textContent) return;
+  openPopover($("ctx"), (panel) => {
+    const hint = document.createElement("div");
+    hint.className = "popoverHint";
+    hint.textContent = "Контекст: состав по токенам";
+    panel.append(hint);
+    const body = document.createElement("div");
+    body.className = "ctxBreak";
+    body.textContent = "Считаю…";
+    panel.append(body);
+    panel.append(popoverItem("Сжать контекст", { icon: "archive", onSelect: () => compactNow() }));
+    granka.contextBreakdown().then((result) => {
+      if (!result?.ok || !result.context) {
+        body.textContent = "Неизвестно до следующего ответа.";
+        return;
+      }
+      body.replaceChildren();
+      const total = Math.max(1, result.context.tokens);
+      for (const part of result.parts) {
+        const row = document.createElement("div");
+        row.className = "ctxBreakRow";
+        const label = document.createElement("span");
+        label.textContent = part.label;
+        const bar = document.createElement("div");
+        bar.className = "ctxBreakBar";
+        const fill = document.createElement("div");
+        fill.className = "ctxBreakFill";
+        fill.style.width = `${Math.min(100, (part.tokens / total) * 100)}%`;
+        bar.append(fill);
+        const val = document.createElement("span");
+        val.className = "ctxBreakVal";
+        val.textContent = formatTokens(part.tokens);
+        row.append(label, bar, val);
+        body.append(row);
+      }
+      const totalRow = document.createElement("div");
+      totalRow.className = "ctxBreakRow";
+      totalRow.textContent = `Всего ${formatTokens(result.context.tokens)} из ${formatTokens(result.context.window)} (${Math.round(result.context.percent)}%)`;
+      body.append(totalRow);
+    }).catch(() => {
+      body.textContent = "Не удалось посчитать состав.";
+    });
+  });
+});
 
 // --- popover ---------------------------------------------------------------
 
@@ -281,6 +371,8 @@ function closePopover() {
   const panel = $("popover");
   if (panel.hidden) return;
   panel.hidden = true;
+  disarmPopoverReposition();
+  if (popoverAnchor) popoverAnchor.setAttribute("aria-expanded", "false");
   // Return focus to the anchor the user opened the popover from.
   popoverAnchor?.focus();
   popoverAnchor = null;
@@ -291,6 +383,7 @@ function openPopover(anchor, build) {
   if (popoverAnchor === anchor && !panel.hidden) return closePopover();
   panel.replaceChildren();
   build(panel);
+  panel.setAttribute("aria-label", anchor.getAttribute("aria-label") || anchor.title || "Меню");
   panel.hidden = false;
   const rect = anchor.getBoundingClientRect();
   const width = panel.offsetWidth;
@@ -299,7 +392,12 @@ function openPopover(anchor, build) {
   const top = Math.min(rect.bottom + 4, window.innerHeight - height - 8);
   panel.style.left = `${left}px`;
   panel.style.top = `${top}px`;
+  if (rect.bottom + height > window.innerHeight - 8) {
+    panel.style.top = `${Math.max(8, rect.top - height - 4)}px`;
+  }
   popoverAnchor = anchor;
+  anchor.setAttribute("aria-expanded", "true");
+  armPopoverReposition();
   panel.querySelector("button, input")?.focus();
 }
 
@@ -309,10 +407,32 @@ document.addEventListener("mousedown", (event) => {
   closePopover();
 });
 
+// Keep an open popover attached to its anchor while scrolling/resizing.
+let popoverReposition = null;
+function armPopoverReposition() {
+  disarmPopoverReposition();
+  popoverReposition = () => {
+    if ($("popover").hidden || !popoverAnchor) return;
+    const rect = popoverAnchor.getBoundingClientRect();
+    const panel = $("popover");
+    panel.style.left = `${Math.min(Math.max(8, rect.left), window.innerWidth - panel.offsetWidth - 8)}px`;
+    panel.style.top = `${Math.min(rect.bottom + 4, Math.max(8, window.innerHeight - panel.offsetHeight - 8))}px`;
+  };
+  window.addEventListener("resize", popoverReposition);
+  window.addEventListener("scroll", popoverReposition, true);
+}
+function disarmPopoverReposition() {
+  if (popoverReposition) {
+    window.removeEventListener("resize", popoverReposition);
+    window.removeEventListener("scroll", popoverReposition, true);
+    popoverReposition = null;
+  }
+}
+
 // Generic focus trap for any visible dialog container.
 function trapTab(container, event) {
   if (event.key !== "Tab") return;
-  const focusables = [...container.querySelectorAll("button:not(:disabled), input, [tabindex]")]
+  const focusables = [...container.querySelectorAll("button:not(:disabled), input, textarea, select, a[href], [tabindex]")]
     .filter((el) => el.offsetParent !== null || el === document.activeElement);
   if (!focusables.length) return;
   const first = focusables[0];
@@ -330,7 +450,6 @@ document.addEventListener("keydown", (event) => {
 function popoverItem(label, { meta, current, danger, icon, onSelect, contextMenu } = {}) {
   const item = document.createElement("button");
   item.className = `popoverItem${current ? " isCurrent" : ""}${danger ? " danger" : ""}`;
-  item.setAttribute("role", "menuitem");
   if (icon) item.append(svgIcon(icon));
   const text = document.createElement("span");
   text.textContent = label;
@@ -379,8 +498,22 @@ function buildModelSection(panel) {
   search.placeholder = "Поиск модели";
   search.setAttribute("aria-label", "Поиск модели");
   panel.append(search);
+  let freeOnly = false;
+  const freeToggle = document.createElement("button");
+  freeToggle.className = "popoverFreeToggle";
+  freeToggle.setAttribute("aria-pressed", "false");
+  freeToggle.textContent = "Только бесплатные";
+  freeToggle.addEventListener("click", () => {
+    freeOnly = !freeOnly;
+    freeToggle.setAttribute("aria-pressed", String(freeOnly));
+    freeToggle.classList.toggle("isActive", freeOnly);
+    render();
+  });
+  panel.append(freeToggle);
   const list = document.createElement("div");
   list.className = "modelList";
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", "Модели");
   panel.append(list);
 
   const render = () => {
@@ -394,7 +527,7 @@ function buildModelSection(panel) {
       return;
     }
     globalThis.grankaModels.renderModelRows(list, {
-      models: allModels,
+      models: freeOnly ? allModels.filter((m) => globalThis.grankaModels.isFree(m)) : allModels,
       favorites: config.favorites ?? [],
       current: config.model,
       query: search.value,
@@ -414,7 +547,7 @@ function buildThinkingSection(panel) {
   const mode = thinkingMode();
   for (const level of levelsOf(config.model)) {
     panel.append(
-      popoverItem(level, {
+      popoverItem(levelRu(level), {
         current: level === (config.thinkingLevel ?? "off"),
         onSelect: () => {
           saveConfig({ thinkingLevel: level });
@@ -423,20 +556,22 @@ function buildThinkingSection(panel) {
       }),
     );
   }
-  panel.append(
-    popoverItem(`показ в чате: ${THINKING_MODES[mode]}`, {
-      icon: "layers",
-      current: mode !== "off",
-      onSelect: () => {
-        const next = modes[(modes.indexOf(mode) + 1) % modes.length];
-        saveConfig({ thinkingDisplay: next });
-        if (next === "off" && thinkingBlock && busy) {
-          thinkingBlock.remove();
-          resetThinking();
-        }
-      },
-    }),
-  );
+  panel.append(popoverHeading("Показ мышления в чате"));
+  for (const value of modes) {
+    panel.append(
+      popoverItem(THINKING_MODES[value], {
+        icon: "layers",
+        current: mode === value,
+        onSelect: () => {
+          saveConfig({ thinkingDisplay: value });
+          if (value === "off" && thinkingBlock && busy) {
+            thinkingBlock.remove();
+            resetThinking();
+          }
+        },
+      }),
+    );
+  }
 }
 
 function popoverHeading(text) {
@@ -451,20 +586,30 @@ function openBrainPopover() {
   openPopover($("brainPopup"), (panel) => {
     const tabs = document.createElement("div");
     tabs.className = "segmented popoverTabs";
+    tabs.setAttribute("role", "tablist");
+    tabs.setAttribute("aria-label", "Модель и мышление");
     const modelTab = document.createElement("button");
     modelTab.className = "segment isActive";
+    modelTab.setAttribute("role", "tab");
+    modelTab.setAttribute("aria-selected", "true");
     modelTab.textContent = "Модель";
     const thinkTab = document.createElement("button");
     thinkTab.className = "segment";
+    thinkTab.setAttribute("role", "tab");
+    thinkTab.setAttribute("aria-selected", "false");
     thinkTab.textContent = "Мышление";
     const modelBody = document.createElement("div");
     const thinkBody = document.createElement("div");
     buildModelSection(modelBody);
     buildThinkingSection(thinkBody);
     thinkBody.hidden = true;
+    modelBody.setAttribute("role", "tabpanel");
+    thinkBody.setAttribute("role", "tabpanel");
     const show = (model) => {
       modelTab.classList.toggle("isActive", model);
       thinkTab.classList.toggle("isActive", !model);
+      modelTab.setAttribute("aria-selected", String(model));
+      thinkTab.setAttribute("aria-selected", String(!model));
       modelBody.hidden = !model;
       thinkBody.hidden = model;
     };
@@ -518,7 +663,6 @@ function renderMode() {
   );
   button.title = `Режим работы: ${mode.name} — ${mode.hint}`;
   button.setAttribute("aria-label", button.title);
-  renderWorkspaceMeta();
 }
 
 function openModePopover() {
@@ -539,7 +683,6 @@ async function setAgentMode(id) {
   if (!AGENT_MODES[id]) return;
   await saveConfig({ agentMode: id, planMode: id === "plan" });
   renderMode();
-  renderWorkspaceMeta();
   toast(`Режим: ${AGENT_MODES[id].name}`);
 }
 
@@ -557,7 +700,8 @@ function renderBrain() {
     : "Выбрать модель";
   button.setAttribute("aria-label", button.title);
   const level = $("brainLevel");
-  if (level) level.textContent = current ?? "off";
+  const short = model ? globalThis.grankaModels.modelName(model.id) : "Модель";
+  if (level) level.textContent = current && current !== "off" ? `${short} · ${levelRu(current)}` : short;
   if (current && current !== config.thinkingLevel) saveConfig({ thinkingLevel: current });
 }
 
@@ -591,9 +735,26 @@ function setView(next) {
 }
 
 async function buildStatsPane() {
-  const data = await granka.getStats();
   const pane = $("statsPane");
   pane.replaceChildren();
+  let data;
+  try {
+    data = await granka.getStats();
+  } catch (err) {
+    $("statsMeta").textContent = "";
+    const box = document.createElement("div");
+    box.className = "sessionError";
+    box.setAttribute("role", "alert");
+    const text = document.createElement("span");
+    text.textContent = `Не удалось загрузить аналитику: ${err?.message ?? err}`;
+    const retry = document.createElement("button");
+    retry.className = "ghostBtn";
+    retry.textContent = "Повторить";
+    retry.addEventListener("click", () => buildStatsPane());
+    box.append(text, retry);
+    pane.append(box);
+    return;
+  }
   $("statsMeta").textContent = `${data.totals.calls} запросов · $${data.totals.cost.toFixed(4)} · ${data.totals.input + data.totals.output} токенов`;
 
   if (!data.totals.calls) {
@@ -626,31 +787,114 @@ async function buildStatsPane() {
   };
   summary.append(
     card("Стоимость", `$${data.totals.cost.toFixed(3)}`, data.totals.billedCalls ? `${data.totals.billedCalls}/${data.totals.calls} вызовов — по счёту провайдера` : "оценка по каталогу"),
-    card("Запросы", String(data.totals.calls), `${data.byDay.length} дней`),
+    card("Запросы", String(data.totals.calls), plural(data.byDay.length, ["день", "дня", "дней"])),
     card("Вход", formatTokens(data.totals.input), "токенов, включая кэш"),
     card("Кэш", formatTokens((data.totals.cacheRead ?? 0) + (data.totals.cacheWrite ?? 0)), "чтение + запись"),
     card("Выход", formatTokens(data.totals.output), "токенов"),
   );
   pane.append(summary);
 
-  const maxCost = Math.max(...data.byDay.map((day) => day.cost), 0.0001);
-  const chart = document.createElement("div");
-  chart.className = "statsChart";
-  for (const day of data.byDay) {
-    const column = document.createElement("div");
-    column.className = "statsBar";
-    column.title = `${day.day}: ${day.calls} запросов · $${day.cost.toFixed(4)}`;
+  // Charts: tabs for days (cost/tokens), projects and models.
+  let chartMode = "days";
+  let dayMetric = "cost";
+  const tabs = document.createElement("div");
+  tabs.className = "statsTabs";
+  tabs.setAttribute("role", "tablist");
+  const chartBox = document.createElement("div");
+  const hbar = (label, value, share, title) => {
+    const row = document.createElement("div");
+    row.className = "statsHRow";
+    row.title = title;
+    const name = document.createElement("span");
+    name.className = "statsHName";
+    name.textContent = label;
+    const track = document.createElement("span");
+    track.className = "statsHBar";
     const fill = document.createElement("span");
-    fill.style.height = `${Math.max(2, Math.round((day.cost / maxCost) * 100))}%`;
-    column.append(fill);
-    chart.append(column);
+    fill.style.width = `${Math.max(2, Math.round(share * 100))}%`;
+    track.append(fill);
+    const valueEl = document.createElement("span");
+    valueEl.className = "statsHValue";
+    valueEl.textContent = value;
+    row.append(name, track, valueEl);
+    return row;
+  };
+  const renderChart = () => {
+    for (const btn of tabs.querySelectorAll("button")) {
+      const on = btn.dataset.mode === chartMode;
+      btn.classList.toggle("isOn", on);
+      btn.setAttribute("aria-selected", String(on));
+    }
+    chartBox.replaceChildren();
+    if (chartMode === "days") {
+      const byDay = data.byDay;
+      const values = byDay.map((day) => (dayMetric === "cost" ? day.cost : day.input + day.output));
+      const max = Math.max(...values, dayMetric === "cost" ? 0.0001 : 1);
+      const chart = document.createElement("div");
+      chart.className = "statsChart";
+      chart.setAttribute("role", "img");
+      chart.setAttribute("aria-label", dayMetric === "cost"
+        ? `Расходы по дням: максимум $${max.toFixed(4)}, дней: ${byDay.length}`
+        : `Токены по дням: максимум ${formatTokens(max)}, дней: ${byDay.length}`);
+      byDay.forEach((day, index) => {
+        const column = document.createElement("div");
+        column.className = "statsBar";
+        column.title = dayMetric === "cost"
+          ? `${day.day}: ${day.calls} запросов · $${day.cost.toFixed(4)}`
+          : `${day.day}: ${formatTokens(day.input + day.output)} токенов · ${day.calls} запросов`;
+        const fill = document.createElement("span");
+        fill.style.height = `${Math.max(2, Math.round((values[index] / max) * 100))}%`;
+        column.append(fill);
+        chart.append(column);
+      });
+      const metric = document.createElement("div");
+      metric.className = "statsMetric";
+      for (const [key, label] of [["cost", "Стоимость"], ["tokens", "Токены"]]) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "statsMetricBtn";
+        btn.textContent = label;
+        btn.classList.toggle("isOn", dayMetric === key);
+        btn.addEventListener("click", () => { dayMetric = key; renderChart(); });
+        metric.append(btn);
+      }
+      chartBox.append(metric, chart);
+    } else {
+      const rows = chartMode === "projects" ? data.byProject : data.byModel;
+      const labelKey = chartMode === "projects" ? "project" : "model";
+      const total = Math.max(...rows.map((row) => row.cost), 0.0001);
+      const bars = document.createElement("div");
+      bars.className = "statsHBars";
+      bars.setAttribute("role", "img");
+      bars.setAttribute("aria-label", chartMode === "projects" ? "Расход по проектам" : "Расход по моделям");
+      for (const row of rows) {
+        const name = chartMode === "projects" ? row[labelKey] : globalThis.grankaModels.modelName(row[labelKey]);
+        bars.append(hbar(name, `$${row.cost.toFixed(4)} · ${formatTokens(row.input + row.output)}`, row.cost / total,
+          `${row.calls} запросов · $${row.cost.toFixed(4)}`));
+      }
+      chartBox.append(bars);
+    }
+  };
+  for (const [mode, label] of [["days", "По дням"], ["projects", "По проектам"], ["models", "По моделям"]]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.mode = mode;
+    btn.className = "statsTab";
+    btn.setAttribute("role", "tab");
+    btn.textContent = label;
+    btn.addEventListener("click", () => { chartMode = mode; renderChart(); });
+    tabs.append(btn);
   }
-  pane.append(chart);
+  pane.append(tabs, chartBox);
+  renderChart();
 
   const table = document.createElement("div");
   table.className = "statsTable";
+  table.setAttribute("role", "table");
+  table.setAttribute("aria-label", "Расходы по моделям");
   const head = document.createElement("div");
   head.className = "statsRow isHead";
+  head.setAttribute("role", "row");
   head.append(
     Object.assign(document.createElement("span"), { textContent: "Модель" }),
     Object.assign(document.createElement("span"), { textContent: "Запросы" }),
@@ -661,6 +905,7 @@ async function buildStatsPane() {
   for (const row of data.byModel) {
     const line = document.createElement("div");
     line.className = "statsRow";
+    line.setAttribute("role", "row");
     line.append(
       Object.assign(document.createElement("span"), { textContent: globalThis.grankaModels.modelName(row.model) }),
       Object.assign(document.createElement("span"), { textContent: String(row.calls) }),
@@ -744,7 +989,7 @@ function messageActions(role, wrapper) {
     // The correct prompt is the one this answer replied to, not necessarily
     // the latest one in the session.
     const text = role === "user" ? wrapper.__raw : wrapper.__prompt || (await granka.lastPrompt());
-    if (!text) return fail("Нечего повторять");
+    if (!text) return fail("Нет текста для повтора. Напишите запрос");
     $("prompt").value = stripAttachmentNote(text);
     autoGrow();
     send();
@@ -758,18 +1003,13 @@ function addMessage(role, text, { animate = true } = {}) {
   const wrapper = document.createElement("div");
   wrapper.className = `msg ${role}${animate ? " isNew" : ""}`;
   wrapper.__raw = text ?? "";
-  const who = document.createElement("div");
-  who.className = "who";
-  const label = document.createElement("span");
-  label.textContent = role === "user" ? "вы" : "granka";
-  who.append(label, messageActions(role, wrapper));
   const body = document.createElement("div");
   body.className = "text";
   if (role === "assistant") {
     body.innerHTML = window.mdToHtml(wrapper.__raw);
     decorateCodeBlocks(body);
   } else body.textContent = wrapper.__raw;
-  wrapper.append(who, body);
+  wrapper.append(messageActions(role, wrapper), body);
   log.append(wrapper);
   return { wrapper, body };
 }
@@ -832,6 +1072,8 @@ function addCheckpointDivider(id) {
   button.textContent = "откатить";
   button.title = "Вернуть файлы к состоянию перед этими правками (новые файлы останутся)";
   button.addEventListener("click", async () => {
+    const ok = await granka.confirm("Откатить файлы к чекпоинту?", "Файлы вернутся к состоянию перед этими правками. Новые файлы останутся.", "Откатить");
+    if (!ok) return;
     button.disabled = true;
     const result = await granka.restoreCheckpoint(id);
     toast(result.ok ? "Файлы откачены к чекпоинту" : `Не удалось: ${result.error ?? "ошибка"}`, { error: !result.ok });
@@ -873,11 +1115,12 @@ function renderAssistant(wrapper, body, text) {
 }
 
 function addUsage(wrapper, usage) {
-  if (!usage) return;
+  // Minimal chat: token/cost line is not rendered (stats stay in Analytics).
+  return;
   const line = document.createElement("div");
   line.className = "usage";
   const cost = usage.cost >= 0.01 ? `$${usage.cost.toFixed(3)}` : `$${usage.cost.toFixed(5)}`;
-  line.textContent = `↑${formatTokens(usage.input)} · ↓${formatTokens(usage.output)} · ${cost}${usage.billed ? "" : " оценка"}`;
+  line.textContent = `вход ${formatTokens(usage.input)} · выход ${formatTokens(usage.output)} · ${cost}${usage.billed ? "" : " (оценка)"}`;
   line.title = `input ${usage.input}, output ${usage.output}, cache read ${usage.cacheRead}, всего ${usage.total}`;
   wrapper.append(line);
 }
@@ -940,6 +1183,7 @@ function showEmptyState() {
   log.replaceChildren();
   const box = document.createElement("div");
   box.className = "emptyState";
+  box.append(svgIcon("tray", "emptyStateIcon"));
   const title = document.createElement("h2");
   const hint = document.createElement("p");
 
@@ -951,9 +1195,8 @@ function showEmptyState() {
     title.textContent = "Подключите модель";
     hint.textContent = "Нужен ключ OpenRouter — он хранится в ~/.granka.";
     const primary = document.createElement("button");
-    primary.className = "ghostBtn";
+    primary.className = "softBtn";
     primary.textContent = "Открыть настройки";
-    primary.style.marginBottom = "14px";
     primary.addEventListener("click", () => granka.openSettings());
     box.append(title, hint, primary);
   }
@@ -975,7 +1218,18 @@ function showEmptyState() {
     starters.append(chip);
   }
 
-  if (hasKey) box.append(title, hint);
+  if (hasKey) {
+    box.append(title, hint);
+    const ask = document.createElement("button");
+    ask.className = "primaryBtn";
+    ask.textContent = "Спросить о проекте";
+    ask.addEventListener("click", () => {
+      $("prompt").value = STARTERS[0];
+      autoGrow();
+      $("prompt").focus();
+    });
+    box.append(ask);
+  }
   box.append(starters);
   log.append(box);
 }
@@ -998,7 +1252,14 @@ function scheduleStreamRender() {
   requestAnimationFrame(() => {
     streamRenderQueued = false;
     if (!busy || !streamWrapper) return;
-    renderAssistant(streamWrapper, streamBody, streamText);
+    // While streaming, keep the raw text in a <pre>: re-rendering markdown
+    // on every delta would reset selection and code-block scroll. The
+    // formatted render happens once when the answer settles (send()).
+    // The model emits '\n\n' text blocks around tool calls; with pre-wrap
+    // they pile up into big blank gaps that the final markdown render would
+    // collapse. Collapse them here so streaming looks like the settled render.
+    streamBody.textContent = streamText.replace(/(\n\s*){3,}/g, "\n\n");
+    streamBody.classList.add("isStreaming");
   });
 }
 
@@ -1037,11 +1298,13 @@ granka.onThinking((delta) => {
     body.className = "thinkingBody";
     thinkingBlock.append(head, body);
     streamWrapper.insertBefore(thinkingBlock, streamBody);
-    thinkingBlock.addEventListener("click", (event) => {
+    // Only the head toggles: the body stays selectable.
+    head.addEventListener("click", (event) => {
       if (event.target.closest("a")) return;
       toggleThinking(thinkingBlock);
     });
     thinkingBlock.addEventListener("keydown", (event) => {
+      if (event.target.closest(".thinkingBody")) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         toggleThinking(thinkingBlock);
@@ -1122,7 +1385,7 @@ function toolFirstLine(args) {
 function makeToolChip(name, args, toolCallId) {
   const chip = document.createElement("div");
   chip.className = "tool isRunning";
-  chip.tabIndex = 0;
+  chip.tabIndex = -1;
   chip.dataset.name = name;
   chip.setAttribute("role", "button");
   chip.setAttribute("aria-expanded", "false");
@@ -1159,6 +1422,7 @@ function makeToolChip(name, args, toolCallId) {
     status.className = "toolStatus";
     status.textContent = "работает…";
     texts.append(status);
+    chip.classList.add("isSubagent");
   }
   chip.append(texts);
   const preview = name === "task" ? (agentTask || toolFirstLine(args)) : (toolPreview(name, args) || toolFirstLine(args));
@@ -1183,7 +1447,7 @@ function setToolIcon(chip, icon) {
 function updateGroupHead(group) {
   const list = group.querySelector(".toolGroupList");
   const chips = [...list.children];
-  group.querySelector(".toolCount").textContent = `×${chips.length}`;
+  group.querySelector(".toolCount").textContent = `${chips.length} вызовов`;
   const total = chips.reduce((sum, chip) => sum + (chip.__detail?.durationMs || 0), 0);
   const totalText = formatDuration(total);
   group.querySelector(".toolTime").textContent = totalText ? `· ${totalText}` : "";
@@ -1192,6 +1456,7 @@ function updateGroupHead(group) {
   const badge = group.querySelector(".toolErrorBadge");
   if (badge) badge.textContent = errors ? `${errors} ош.` : "";
   group.classList.toggle("isCollapsed", chips.length >= 3);
+  group.querySelector(".toolGroupHead")?.setAttribute("aria-expanded", String(chips.length < 3));
 }
 
 function toolGroupHead(group) {
@@ -1236,6 +1501,7 @@ function toolGroupHead(group) {
 // the message flow; in "always" mode they sit directly before the answer.
 let toolBlock = null;
 let toolBlockList = null;
+let toolDetailSeq = 0; // ids for aria-details wiring between a chip and its panel
 let toolBlockHead = null;
 
 function resetToolBlock() {
@@ -1274,6 +1540,12 @@ function ensureToolBlock() {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       toggle();
+    } else if (event.key === "ArrowDown") {
+      const first = toolBlockList?.querySelector(".tool");
+      if (!first) return;
+      event.preventDefault();
+      first.tabIndex = 0;
+      first.focus();
     }
   });
   toolBlockList = document.createElement("div");
@@ -1289,7 +1561,7 @@ function updateToolBlockHead() {
   const total = chips.reduce((sum, chip) => sum + (chip.__detail?.durationMs || 0), 0);
   const totalText = formatDuration(total);
   const errors = chips.filter((chip) => chip.classList.contains("error")).length;
-  toolBlockHead.querySelector(".toolCount").textContent = `· ${chips.length}`;
+  toolBlockHead.querySelector(".toolCount").textContent = `${chips.length} вызовов`;
   toolBlockHead.querySelector(".toolTime").textContent = totalText ? `· ${totalText}` : "";
   toolBlockHead.classList.toggle("hasError", errors > 0);
   const badge = toolBlockHead.querySelector(".toolErrorBadge");
@@ -1391,13 +1663,81 @@ granka.onTool((tool) => {
       chip.querySelector(".toolTime").textContent = chipTime ? `· ${chipTime}` : "";
       const status = chip.querySelector(".toolStatus");
       if (status) status.textContent = tool.isError ? "ошибка" : "готово";
-      announce(`Инструмент ${chip.querySelector(".toolLabel").textContent} ${tool.isError ? "завершился с ошибкой" : "завершён"}.`);
+      announce(tool.isError ? "Подагент завершился с ошибкой." : "Подагент завершён.");
+      if (tool.isError) chip.classList.add("hasResult");
       const group = chip.closest(".toolGroup");
       if (group) updateGroupHead(group);
       if (toolBlock) updateToolBlockHead();
     }
   }
   scrollIf(stick);
+});
+
+let bgTasks = [];
+let bgPanelHidden = false;
+
+async function renderBgPanel() {
+  try {
+    bgTasks = await granka.listBackgroundTasks();
+  } catch {
+    return;
+  }
+  const panel = $("bgPanel");
+  if (!panel) return;
+  const running = bgTasks.filter((task) => task.status === "running").length;
+  $("bgPanelCount").textContent = running ? `${running} работает` : `${bgTasks.length}`;
+  panel.hidden = !bgTasks.length;
+  const items = $("bgPanelItems");
+  items.hidden = bgPanelHidden;
+  const toggle = $("bgPanelToggle");
+  if (toggle) {
+    const action = bgPanelHidden ? "Развернуть" : "Свернуть";
+    toggle.title = `${action} панель`;
+    toggle.setAttribute("aria-label", `${action} панель фоновых задач`);
+    toggle.setAttribute("aria-expanded", String(!bgPanelHidden));
+    toggle.classList.toggle("isCollapsed", bgPanelHidden);
+  }
+  items.replaceChildren();
+  for (const task of [...bgTasks].reverse()) {
+    const row = document.createElement("div");
+    row.className = `bgRow${task.status === "done" ? " isDone" : ""}${task.status === "error" ? " isError" : ""}`;
+    const title = document.createElement("span");
+    title.className = "bgRowTitle";
+    title.textContent = `${task.agent}: ${task.description}`;
+    title.title = title.textContent;
+    const status = document.createElement("span");
+    status.className = "bgRowStatus";
+    status.textContent = task.status === "running" ? "работает…"
+      : task.status === "done" ? "готово"
+      : task.status === "canceled" ? "отменено" : "ошибка";
+    row.append(title, status);
+    if (task.status === "running") {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "iconBtn";
+      cancel.title = "Отменить задачу";
+      cancel.setAttribute("aria-label", `Отменить задачу: ${task.description}`);
+      cancel.append(svgIcon("x"));
+      cancel.addEventListener("click", async () => {
+        await granka.cancelBackgroundTask(task.id);
+        renderBgPanel();
+      });
+      row.append(cancel);
+    }
+    row.classList.toggle("isCanceled", task.status === "canceled");
+    items.append(row);
+    if (task.status !== "running" && task.text) {
+      const result = document.createElement("div");
+      result.className = "bgRowResult";
+      result.textContent = task.text;
+      items.append(result);
+    }
+  }
+}
+
+$("bgPanelToggle")?.addEventListener("click", () => {
+  bgPanelHidden = !bgPanelHidden;
+  renderBgPanel();
 });
 
 granka.onNotice((notice) => {
@@ -1419,7 +1759,15 @@ granka.onNotice((notice) => {
     return;
   }
   if (notice.kind === "subagent") {
-    addDivider(`подагент: ${notice.description} · ${notice.chars} символов`);
+    const line = document.createElement("div");
+    line.className = "subagentResult";
+    const label = document.createElement("span");
+    label.textContent = `подагент: ${notice.description}`;
+    const size = document.createElement("span");
+    size.className = "subagentResultSize";
+    size.textContent = `${notice.chars} символов`;
+    line.append(label, size);
+    log.append(line);
     return;
   }
   if (notice.kind === "subtool") {
@@ -1429,6 +1777,18 @@ granka.onNotice((notice) => {
     const status = chip?.querySelector(".toolStatus");
     if (status) {
       status.textContent = notice.phase === "start" ? `работает · ${notice.name}…` : `работает · ${notice.name} готово`;
+    }
+    return;
+  }
+  if (notice.kind === "backgroundTask") {
+    renderBgPanel();
+    if (notice.task?.status === "done") {
+      addDivider(`фоновая задача готова: ${notice.task.agent} — ${notice.task.description}`);
+      toast("Фоновая задача завершена");
+    } else if (notice.task?.status === "error") {
+      addDivider(`фоновая задача упала: ${notice.task.agent} — ${notice.task.text}`);
+    } else if (notice.task?.status === "canceled") {
+      addDivider(`фоновая задача отменена: ${notice.task.description}`);
     }
     return;
   }
@@ -1453,12 +1813,16 @@ function renderDiff(args) {
   diff.className = "toolDiff";
   const addLines = (text, cls) => {
     if (text === null) return;
-    for (const line of text.split("\n")) {
+    text.split("\n").forEach((line, index) => {
       const row = document.createElement("div");
       row.className = `diffLine ${cls}`;
-      row.textContent = (cls === "del" ? "− " : "+ ") + line;
+      const num = document.createElement("span");
+      num.className = "diffNum";
+      num.textContent = String(index + 1);
+      num.setAttribute("aria-hidden", "true");
+      row.append(num, document.createTextNode((cls === "del" ? "− " : "+ ") + line));
       diff.append(row);
-    }
+    });
   };
   addLines(before, "del");
   addLines(after, "add");
@@ -1525,42 +1889,48 @@ function argsSection(args) {
     section.append(pre);
     return section;
   }
-  const [firstKey, firstValue] = entries[0];
-  const main = document.createElement("div");
-  main.className = "argRow";
-  const key = document.createElement("span");
-  key.className = "argKey";
-  key.textContent = firstKey;
-  const value = document.createElement("span");
-  value.className = "argValue";
-  value.textContent = typeof firstValue === "string" ? firstValue : JSON.stringify(firstValue);
-  main.append(key, value);
-  section.append(main);
-  if (entries.length > 1) {
-    const meta = document.createElement("div");
-    meta.className = "argMeta";
-    meta.textContent = entries
-      .slice(1)
-      .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
-      .join(" · ");
-    section.append(meta);
+  for (const [k, v] of entries) {
+    const main = document.createElement("div");
+    main.className = "argRow";
+    const key = document.createElement("span");
+    key.className = "argKey";
+    key.textContent = k;
+    const value = document.createElement("span");
+    value.className = "argValue";
+    value.textContent = typeof v === "string" ? v : JSON.stringify(v);
+    main.append(key, value);
+    section.append(main);
   }
   return section;
 }
 
+// The detail a chip owns: found by aria-details, or as its next sibling.
+// Both cases matter — live chips carry the detail inline, history chips open
+// it after the whole list.
+function toolDetailOf(chip) {
+  const id = chip.getAttribute("aria-details");
+  const byId = id ? document.getElementById(id) : null;
+  if (byId?.classList.contains("toolDetail")) return byId;
+  const next = chip.nextElementSibling;
+  return next?.classList.contains("toolDetail") ? next : null;
+}
+
 function toggleToolDetail(chip) {
-  // Only one detail open at a time: close siblings first.
-  for (const other of [...chip.parentElement.querySelectorAll(".toolDetail")]) {
-    other.remove();
-  }
-  for (const other of [...chip.parentElement.querySelectorAll(".tool[aria-expanded='true']")]) {
-    other.setAttribute("aria-expanded", "false");
-  }
-  const existing = chip.nextElementSibling;
-  if (existing?.classList.contains("toolDetail")) {
+  // Close this chip's own detail first: removing siblings before the check
+  // also removed its own detail, so a second click re-opened it.
+  const existing = toolDetailOf(chip);
+  if (existing) {
     existing.remove();
     chip.setAttribute("aria-expanded", "false");
+    chip.removeAttribute("aria-details");
     return;
+  }
+  // One detail per parent.
+  const scope = chip.closest(".msg") ?? chip.parentElement;
+  for (const other of [...scope.querySelectorAll(".toolDetail")]) other.remove();
+  for (const other of [...scope.querySelectorAll(".tool[aria-expanded='true']")]) {
+    other.setAttribute("aria-expanded", "false");
+    other.removeAttribute("aria-details");
   }
   const detail = document.createElement("div");
   detail.className = "toolDetail";
@@ -1582,7 +1952,7 @@ function toggleToolDetail(chip) {
   copyLabel.textContent = "копировать";
   copy.append(copyLabel);
   copy.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(`${args}\n\n— результат —\n${unwrapResult(result) || "(нет)"}`);
+    await copyText(`${args}\n\n— результат —\n${unwrapResult(result) || "(нет)"}`);
     copyLabel.textContent = "скопировано";
     setTimeout(() => (copyLabel.textContent = "копировать"), 1500);
   });
@@ -1600,7 +1970,12 @@ function toggleToolDetail(chip) {
   }
   detail.append(argsSection(args));
   detail.append(detailSection("результат", unwrapResult(result) || "(нет)"));
-  chip.after(detail);
+  // In history the chips live in a flex column: put the detail after that
+  // column, not between the rows.
+  detail.id = `tool-detail-${++toolDetailSeq}`;
+  chip.setAttribute("aria-details", detail.id);
+  const detailHost = chip.parentElement.classList.contains("toolList") ? chip.parentElement : chip;
+  detailHost.after(detail);
   chip.setAttribute("aria-expanded", "true");
 }
 
@@ -1609,11 +1984,38 @@ log.addEventListener("click", (event) => {
   if (chip) toggleToolDetail(chip);
 });
 
+log.addEventListener("focusout", (event) => {
+  const chip = event.target.closest?.(".tool");
+  if (chip && !event.relatedTarget?.closest?.(".tool")) chip.tabIndex = -1;
+});
+
 log.addEventListener("keydown", (event) => {
   const chip = event.target.closest?.(".tool");
-  if (chip && (event.key === "Enter" || event.key === " ")) {
+  if (chip) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggleToolDetail(chip);
+    } else if (event.key === "ArrowUp" && chip === chip.parentElement.querySelector(".tool")) {
+      event.preventDefault();
+      chip.tabIndex = -1;
+      toolBlockHead?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const chips = [...chip.parentElement.querySelectorAll(".tool")];
+      const next = chips[chips.indexOf(chip) + (event.key === "ArrowDown" ? 1 : -1)];
+      if (!next) return;
+      chip.tabIndex = -1;
+      next.tabIndex = 0;
+      next.focus();
+    }
+    return;
+  }
+  // From a block/group head, ArrowDown enters its chip list (chips are
+  // roving-tabindex: one Tab stop per group, not per chip).
+  const head = event.target.closest?.(".toolBlockHead, .toolGroupHead");
+  if (head && event.key === "ArrowDown") {
     event.preventDefault();
-    toggleToolDetail(chip);
+    head.parentElement.querySelector(".tool")?.focus();
   }
 });
 
@@ -1627,15 +2029,63 @@ $("scrollDown").addEventListener("click", () => {
 
 function toggleSidebar() {
   const hidden = document.body.classList.toggle("noSidebar");
+  $("sidebarToggle").setAttribute("aria-expanded", String(!hidden));
   localStorage.setItem("granka.sidebar", hidden ? "hidden" : "shown");
 }
 
 $("sidebarToggle").addEventListener("click", toggleSidebar);
 
+// Sidebar resize by dragging its right edge (200–400px, saved locally).
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 400;
+function applySidebarWidth(width) {
+  const clamped = Math.min(Math.max(Math.round(width) || 232, SIDEBAR_MIN), SIDEBAR_MAX);
+  document.documentElement.style.setProperty("--sidebar-w", `${clamped}px`);
+  localStorage.setItem("granka.sidebarWidth", String(clamped));
+}
+
+function initSidebarResize() {
+  const sidebar = $("sidebar");
+  if (!sidebar) return;
+  const handle = document.createElement("div");
+  handle.className = "sidebarResize";
+  handle.setAttribute("role", "separator");
+  handle.setAttribute("aria-label", "Изменить ширину боковой панели");
+  handle.tabIndex = 0;
+  sidebar.append(handle);
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    const move = (moveEvent) => {
+      applySidebarWidth(moveEvent.clientX);
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+  handle.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const current = Number(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-w")) || 232;
+    applySidebarWidth(current + (event.key === "ArrowRight" ? 8 : -8));
+  });
+  handle.addEventListener("dblclick", () => applySidebarWidth(232));
+}
+
 function renderProjectLabel() {
   const project = projects.find((item) => item.id === activeProjectId);
   $("projectName").textContent = project ? project.name : "Без проекта";
   $("projectPopup").title = project?.cwd || "Проект не выбран";
+  const meta = $("projectCardMeta");
+  if (meta) {
+    const count = sessions.length;
+    meta.textContent = project
+      ? [project.cwd ? project.cwd.split(/[\\/]/).pop() : "", count ? plural(count, ["диалог", "диалога", "диалогов"]) : ""].filter(Boolean).join(" · ")
+      : "";
+  }
 }
 
 let draftSeq = 0;
@@ -1667,18 +2117,28 @@ function renderPlanStrip() {
   const pending = items.filter((item) => item.status !== "completed");
   const lastDone = [...items].reverse().find((item) => item.status === "completed");
   const visible = expanded ? items : [...(lastDone ? [lastDone] : []), ...pending.slice(0, 2)];
-  list.replaceChildren(
-    ...visible.map((item) => {
-      const row = document.createElement("div");
-      row.className = `planRow is-${item.status}`;
-      row.append(Object.assign(document.createElement("span"), { className: "planDot" }));
-      const text = document.createElement("span");
-      text.textContent = item.content;
-      row.append(text);
-      return row;
-    }),
-  );
+  const rows = visible.map((item) => {
+    const row = document.createElement("div");
+    row.className = `planRow is-${item.status}`;
+    row.append(Object.assign(document.createElement("span"), { className: "planDot" }));
+    const text = document.createElement("span");
+    text.textContent = item.content;
+    row.append(text);
+    const status = document.createElement("span");
+    status.className = "planStatus";
+    status.textContent = item.status === "completed" ? "готово" : item.status === "in_progress" ? "в работе" : "ждёт";
+    row.append(status);
+    return row;
+  });
+  if (!expanded && items.length > visible.length) {
+    const more = document.createElement("div");
+    more.className = "planRow planMore";
+    more.textContent = `ещё ${items.length - visible.length}`;
+    rows.push(more);
+  }
+  list.replaceChildren(...rows);
   list.hidden = visible.length === 0;
+  strip.setAttribute("aria-live", "polite");
 }
 
 $("planStripToggle").addEventListener("click", () => {
@@ -1686,6 +2146,7 @@ $("planStripToggle").addEventListener("click", () => {
   const expanded = button.getAttribute("aria-expanded") === "true";
   button.setAttribute("aria-expanded", String(!expanded));
   button.title = expanded ? "Развернуть все задачи" : "Свернуть задачи";
+  button.setAttribute("aria-label", button.title);
   button.classList.toggle("isOpen", !expanded);
   renderPlanStrip();
 });
@@ -1696,8 +2157,38 @@ $("planStripClear").addEventListener("click", () => {
 });
 
 let currentQuestionId = "";
+let lastModalTrigger = null;
+
+function setBackgroundInert(on) {
+  for (const id of ["shell", "toolbar"]) {
+    const el = $(id);
+    if (el) el.inert = on;
+  }
+}
+
+function closeQuestion(answer) {
+  const modal = $("questionModal");
+  if (modal.hidden) return;
+  modal.hidden = true;
+  setBackgroundInert(false);
+  granka.answer(currentQuestionId, answer);
+  currentQuestionId = "";
+  (lastModalTrigger ?? $("prompt")).focus();
+}
 
 function renderQuestion(payload) {
+  // Timeout-dismiss from the main process: the question already resolved
+  // with an empty answer, just hide the modal without sending another one.
+  if (payload.closed) {
+    if (payload.id === currentQuestionId) {
+      $("questionModal").hidden = true;
+      setBackgroundInert(false);
+      currentQuestionId = "";
+      (lastModalTrigger ?? $("prompt")).focus();
+    }
+    return;
+  }
+  lastModalTrigger = document.activeElement;
   currentQuestionId = payload.id ?? "";
   const modal = $("questionModal");
   const options = $("questionOptions");
@@ -1707,13 +2198,6 @@ function renderQuestion(payload) {
   $("questionTitle").textContent = payload.question ?? "";
   options.replaceChildren();
   freeform.hidden = payload.allowFreeform === false;
-
-  const close = (answer) => {
-    modal.hidden = true;
-    granka.answer(currentQuestionId, answer);
-    currentQuestionId = "";
-    $("prompt").focus();
-  };
 
   for (const option of payload.options ?? []) {
     const button = document.createElement("button");
@@ -1726,34 +2210,31 @@ function renderQuestion(payload) {
       note.textContent = option.description;
       button.append(note);
     }
-    button.addEventListener("click", () => close(option.label));
+    button.addEventListener("click", () => closeQuestion(option.label));
     options.append(button);
   }
 
+  $("questionCancel").onclick = () => closeQuestion("");
   const input = $("questionInput");
   input.value = "";
   $("questionSubmit").onclick = () => {
     const value = input.value.trim();
-    if (value) close(value);
+    if (value) closeQuestion(value);
   };
   input.onkeydown = (event) => {
     if (event.key === "Enter") $("questionSubmit").click();
-    if (event.key === "Escape") close("");
+    if (event.key === "Escape") closeQuestion("");
   };
 
   modal.hidden = false;
+  setBackgroundInert(true);
   options.querySelector("button")?.focus();
 }
 
 // Question modal: Escape and overlay click close it, Tab stays inside.
 // Registered once; renderQuestion only fills the content.
 $("questionModal").addEventListener("click", (event) => {
-  if (event.target === $("questionModal")) {
-    $("questionModal").hidden = true;
-    granka.answer(currentQuestionId, "");
-    currentQuestionId = "";
-    $("prompt").focus();
-  }
+  if (event.target === $("questionModal")) closeQuestion("");
 });
 
 document.addEventListener("keydown", (event) => {
@@ -1761,24 +2242,19 @@ document.addEventListener("keydown", (event) => {
   if (modal.hidden) return;
   if (event.key === "Escape") {
     event.preventDefault();
-    modal.hidden = true;
-    granka.answer(currentQuestionId, "");
-    currentQuestionId = "";
-    $("prompt").focus();
+    event.stopImmediatePropagation();
+    closeQuestion("");
     return;
   }
   if (event.key === "Tab") trapTab(modal, event);
 });
 
-function renderWorkspaceMeta() {
-  const mode = AGENT_MODES[agentMode()];
-  const meta = $("titlebarMeta");
-  meta.textContent = agentMode() === "chat" ? "" : mode.name;
-  meta.title = agentMode() === "chat" ? "" : `${mode.name}: ${mode.hint}`;
-  $("composerHint").textContent =
-    agentMode() === "plan"
-      ? "режим плана — только чтение · Enter — отправить · «/» — команды"
-      : "Enter — отправить · Shift+Enter — новая строка · «/» — команды";
+function updateToolbarChatTitle() {
+  const el = $("chatTitle");
+  if (!el) return;
+  const session = sessions.find((item) => item.id === currentSessionId);
+  el.textContent = session?.title ?? "";
+  el.title = session?.title ?? "";
 }
 
 
@@ -1802,7 +2278,7 @@ function startRailRename(item) {
   const input = document.createElement("input");
   input.className = "sessionRename";
   input.value = item.title;
-  input.setAttribute("aria-label", "Новое имя сессии");
+  input.setAttribute("aria-label", "Новое название диалога");
   title.replaceWith(input);
   input.focus();
   input.select();
@@ -1868,11 +2344,19 @@ function openSessionMenu(x, y, item) {
       toast("Диалог продублирован");
     },
   });
-  add("Экспорт в Markdown", {
+  add("Сохранить в файл…", {
+    icon: "file-text",
+    onSelect: async () => {
+      const result = await granka.exportSessionFile([item.id]);
+      if (!result.ok) return fail(result.error ?? "Не удалось сохранить файл. Повторите попытку");
+      toast(`Сохранено: ${result.path}`);
+    },
+  });
+  add("Скопировать Markdown", {
     icon: "file-text",
     onSelect: async () => {
       const result = await granka.exportSessions([item.id]);
-      if (!result.ok) return fail(result.error ?? "не удалось экспортировать");
+      if (!result.ok) return fail(result.error ?? "Не удалось скопировать Markdown. Повторите попытку");
       await copyText(result.text);
       toast("Диалог скопирован в буфер как Markdown");
     },
@@ -1890,7 +2374,7 @@ function openSessionMenu(x, y, item) {
     onSelect: async () => {
       await granka.assignSession(item.id, "");
       await refreshSessions();
-      toast("Чат перенесён в «Без проекта»");
+      toast("Диалог перенесён в «Без проекта»");
     },
   });
   for (const project of projects) {
@@ -1901,7 +2385,7 @@ function openSessionMenu(x, y, item) {
       onSelect: async () => {
         await granka.assignSession(item.id, project.id);
         await refreshSessions();
-        toast(`Чат перенесён в «${project.name}»`);
+        toast(`Диалог перенесён в «${project.name}»`);
       },
     });
   }
@@ -1911,6 +2395,8 @@ function openSessionMenu(x, y, item) {
     danger: true,
     icon: "trash-2",
     onSelect: async () => {
+      const ok = await granka.confirm(`Удалить диалог «${item.title}»?`, "Диалог будет удалён без возможности восстановления.");
+      if (!ok) return;
       const result = await granka.deleteSession(item.id);
       if (!result.ok) return fail(result.error);
       if (item.id === currentSessionId) {
@@ -1919,7 +2405,7 @@ function openSessionMenu(x, y, item) {
         await refreshHistory();
       }
       await refreshSessions();
-      toast("Сессия удалена");
+      toast("Диалог удалён");
     },
   });
 
@@ -1927,7 +2413,9 @@ function openSessionMenu(x, y, item) {
   const width = panel.offsetWidth;
   panel.style.left = `${Math.min(x, window.innerWidth - width - 8)}px`;
   panel.style.top = `${Math.min(y, window.innerHeight - panel.offsetHeight - 8)}px`;
-  popoverAnchor = null;
+  popoverAnchor = document.querySelector(`.sessionItem[data-id="${item.id}"]`);
+  if (popoverAnchor) popoverAnchor.setAttribute("aria-expanded", "true");
+  panel.querySelector("button")?.focus();
 }
 
 function renderSessions() {
@@ -1942,8 +2430,10 @@ function renderSessions() {
   if (!sessions.length) {
     const empty = document.createElement("div");
     empty.className = "sidebarEmpty";
+    empty.append(svgIcon("tray", "emptyIcon"));
+    const emptyText = document.createElement("span");
     if (query) {
-      empty.append("Ничего не найдено. ");
+      emptyText.textContent = "Ничего не найдено. ";
       const reset = document.createElement("button");
       reset.className = "linkBtn";
       reset.textContent = "Сбросить";
@@ -1951,9 +2441,10 @@ function renderSessions() {
         $("sessionSearch").value = "";
         refreshSessions();
       });
-      empty.append(reset);
+      empty.append(emptyText, reset);
     } else {
-      empty.textContent = "Диалогов пока нет.";
+      emptyText.textContent = "Диалогов пока нет.";
+      empty.append(emptyText);
     }
     list.append(empty);
     return;
@@ -1965,13 +2456,18 @@ function renderSessions() {
   const modelWindow = modelById(config.model)?.context ?? 0;
 
   sessions.forEach((item, index) => {
-    const row = document.createElement("button");
+    const row = document.createElement("div");
     const active = item.id === currentSessionId;
     row.className = `sessionItem${active ? " isActive" : ""}`;
+    row.setAttribute("role", "listitem");
     row.dataset.id = item.id;
     row.dataset.projectId = item.projectId ?? "";
     if (active) row.setAttribute("aria-current", "true");
-    row.tabIndex = -1;
+    row.tabIndex = active || index === 0 ? 0 : -1;
+    const open = document.createElement("button");
+    open.className = "sessionOpen";
+    open.setAttribute("aria-haspopup", "dialog");
+    open.title = `${item.title} — Shift+F10: действия`;
 
     const title = document.createElement("span");
     title.className = "sessionTitle";
@@ -1997,9 +2493,20 @@ function renderSessions() {
       meta.title = `~${formatTokens(tokens)} токенов · ${percent}% контекста ${config.model ?? ""}`;
     }
     meta.textContent = `${date}${contextText}`;
-    row.append(title, meta);
+    open.append(title, meta);
+    const menuBtn = document.createElement("button");
+    menuBtn.className = "sessionMenuBtn";
+    menuBtn.setAttribute("aria-label", `Действия: ${item.title}`);
+    menuBtn.setAttribute("aria-haspopup", "dialog");
+    menuBtn.append(svgIcon("ellipsis"));
+    menuBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const rect = menuBtn.getBoundingClientRect();
+      openSessionMenu(rect.left, rect.bottom + 4, item);
+    });
+    row.append(open, menuBtn);
 
-    row.addEventListener("click", () => switchSession(item.id));
+    open.addEventListener("click", () => switchSession(item.id));
     row.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       openSessionMenu(event.clientX, event.clientY, item);
@@ -2014,7 +2521,6 @@ function renderSessions() {
 async function refreshTitle() {
   const project = projects.find((item) => item.id === (currentProjectId || activeProjectId));
   document.title = project ? `${project.name} — granka` : "granka";
-  renderWorkspaceMeta();
 }
 
 let agentDir = "";
@@ -2052,7 +2558,8 @@ async function refreshSessions() {
 }
 
 async function switchSession(id) {
-  if (busy || !id || id === currentSessionId) return;
+  if (busy) return fail("Дождитесь ответа или нажмите «Стоп»");
+  if (!id || id === currentSessionId) return;
   saveDraft();
   const result = await granka.openSession(id);
   if (!result.ok) return fail(result.error);
@@ -2068,12 +2575,22 @@ async function switchSession(id) {
 // keyboard navigation for the source list (HIG: arrow keys move, Return opens)
 $("sessionList").addEventListener("keydown", (event) => {
   if (!sessions.length) return;
+  if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
+    event.preventDefault();
+    const item = sessions[listIndex] ?? sessions.find((entry) => entry.id === currentSessionId) ?? sessions[0];
+    if (!item) return;
+    const row = $("sessionList").querySelector(`[data-id="${item.id}"]`);
+    const rect = row?.getBoundingClientRect();
+    if (rect) openSessionMenu(rect.left + 16, rect.bottom, item);
+    return;
+  }
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
     const delta = event.key === "ArrowDown" ? 1 : -1;
     listIndex = Math.min(Math.max(listIndex + delta, 0), sessions.length - 1);
     const rows = [...$("sessionList").querySelectorAll(".sessionItem")];
-    rows.forEach((row, index) => row.toggleAttribute("data-active", index === listIndex));
+    rows.forEach((row, index) => { row.tabIndex = index === listIndex ? 0 : -1; });
+    rows[listIndex]?.querySelector(".sessionOpen")?.focus();
     rows[listIndex]?.scrollIntoView({ block: "nearest" });
   } else if (event.key === "Enter" && listIndex >= 0) {
     event.preventDefault();
@@ -2095,7 +2612,6 @@ async function refreshHistory() {
   renderPlanStrip();
   syncScrollButton();
   showContext(history.context);
-  renderWorkspaceMeta();
   renderSessions(); // keep the active highlight in sync with the opened chat
   await refreshTitle();
 }
@@ -2177,7 +2693,7 @@ function renderHistoryTurn(message, promptText) {
       total += chip.__detail.durationMs || 0;
       if (chip.classList.contains("error")) errors += 1;
     }
-    headCount.textContent = `· ${historyTools.length}`;
+    headCount.textContent = `${historyTools.length} вызовов`;
     const totalText = formatDuration(total);
     headTime.textContent = totalText ? `· ${totalText}` : "";
     headBadge.textContent = errors ? `${errors} ош.` : "";
@@ -2227,6 +2743,11 @@ function appendHistoryTool(parent, tool) {
   chip.classList.remove("isRunning");
   chip.classList.add(tool.isError ? "error" : "done");
   setToolIcon(chip, tool.isError ? "circle-alert" : "check");
+  if (tool.name === "task") {
+    chip.classList.add("isSubagent");
+    const status = chip.querySelector(".toolStatus");
+    if (status) status.textContent = tool.isError ? "ошибка" : "готово";
+  }
   const time = formatDuration(tool.durationMs);
   chip.querySelector(".toolTime").textContent = time ? `· ${time}` : "";
   parent.append(chip);
@@ -2274,6 +2795,10 @@ function stripAttachmentNote(text) {
 
 function renderAttachments() {
   const box = $("attachments");
+  const totalMb = attachments.reduce((sum, item) => sum + (item.bytes ?? 0), 0) / 1024 / 1024;
+  box.title = attachments.length
+    ? `${plural(attachments.length, ["файл", "файла", "файлов"])} · ${totalMb.toFixed(1)} МБ`
+    : "";
   box.hidden = attachments.length === 0;
   box.replaceChildren();
   for (const item of attachments) {
@@ -2297,14 +2822,17 @@ function renderAttachments() {
     });
     chip.append(name, kind, remove);
     if (item.kind === "document") {
-      chip.classList.add("isPreviewable");
-      chip.title += " — клик: превью";
-      chip.addEventListener("click", async (event) => {
-        if (event.target.closest(".attachmentRemove")) return;
-        const preview = await granka.docPreview(item.path);
-        if (preview.ok) granka.openPreview({ html: preview.html, title: preview.title });
-        else fail(preview.error ?? "нет превью");
+      const preview = document.createElement("button");
+      preview.type = "button";
+      preview.className = "attachmentPreview";
+      preview.append(svgIcon("file-text"));
+      preview.setAttribute("aria-label", `Превью: ${item.name}`);
+      preview.addEventListener("click", async () => {
+        const result = await granka.docPreview(item.path);
+        if (result.ok) granka.openPreview({ html: result.html, title: result.title });
+        else fail(result.error ?? "Превью недоступно. Откройте файл в папке.");
       });
+      chip.append(preview);
     }
     box.append(chip);
   }
@@ -2312,9 +2840,14 @@ function renderAttachments() {
 
 async function addAttachments(paths) {
   const result = await granka.attachFiles(paths);
-  if (!result.ok) return fail(result.error ?? "не удалось прикрепить файлы");
-  for (const item of result.added) attachments.push(item);
-  for (const skip of result.skipped) fail(`Пропущено: ${skip.path} — ${skip.reason}`);
+  if (!result.ok) return fail(result.error ?? "Файл не прикреплён. Проверьте путь и попробуйте снова");
+  for (const item of result.added) {
+    if (attachments.some((entry) => entry.path === item.path)) continue;
+    attachments.push(item);
+  }
+  if (result.skipped?.length) {
+    fail(`Не прикреплено файлов: ${result.skipped.length}. Первый: ${result.skipped[0].path} — ${result.skipped[0].reason}. Попробуйте снова`);
+  }
   renderAttachments();
   // Downscale images in the background so prompts stay cheap.
   for (const item of result.added) {
@@ -2329,7 +2862,7 @@ $("attachBtn").addEventListener("click", async () => {
     const paths = await granka.pickFiles();
     if (paths.length) await addAttachments(paths);
   } catch (err) {
-    fail(`Не удалось открыть диалог выбора файла: ${err?.message ?? err}`);
+    fail(`Не удалось открыть выбор файла. Перетащите файл в окно. ${err?.message ?? err}`);
   } finally {
     button.disabled = false;
   }
@@ -2360,9 +2893,14 @@ window.addEventListener("drop", async (event) => {
   if (paths.length) await addAttachments(paths);
 });
 
+let attachProgressTimer = null;
 granka.onAttachProgress((progress) => {
   const percent = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
   setStatus(`копирую ${progress.path.split(/[\\/]/).pop()}… ${percent}%`);
+  clearTimeout(attachProgressTimer);
+  attachProgressTimer = setTimeout(() => {
+    if (!busy) setStatus("");
+  }, 1200);
 });
 
 $("prompt").addEventListener("paste", async (event) => {
@@ -2371,7 +2909,7 @@ $("prompt").addEventListener("paste", async (event) => {
   const trimmed = rawText.trim();
   if (
     !event.clipboardData?.types?.includes("Files") &&
-    /^\/[\w.\- /]+$/.test(trimmed) &&
+    /^(?:[A-Za-z]:[\\/]|\/|~[\\/])/.test(trimmed) &&
     !trimmed.includes("\n") &&
     trimmed.length < 500
   ) {
@@ -2497,7 +3035,11 @@ function renderSuggest() {
     .filter((entry) => entry.name.slice(1).toLowerCase().includes(query))
     .slice(0, 8);
   if (!matches.length) {
-    box.hidden = true;
+    box.replaceChildren(Object.assign(document.createElement("div"), {
+      className: "popoverHint",
+      textContent: `Ничего не найдено: /${value.slice(1)}`,
+    }));
+    box.hidden = false;
     suggestIndex = -1;
     return;
   }
@@ -2506,18 +3048,18 @@ function renderSuggest() {
       const row = document.createElement("button");
       row.className = "suggestRow";
       const name = document.createElement("b");
-      name.textContent = entry.name;
+      name.replaceChildren(highlightMatch(entry.name, value.slice(1)));
       const desc = document.createElement("span");
       desc.textContent = entry.description;
       row.append(name, desc);
       row.__entry = entry;
       row.addEventListener("click", () => {
         if (entry.action === "plan") {
-          saveConfig({ planMode: !config.planMode });
-          renderWorkspaceMeta();
+          saveConfig({ planMode: !config.planMode, agentMode: !config.planMode ? "plan" : "chat" });
+          renderMode();
           $("prompt").value = "";
           box.hidden = true;
-          toast(config.planMode ? "Режим плана выключен" : "Режим плана включён: только чтение");
+          toast(config.planMode ? "Режим плана включён: только чтение" : "Режим плана выключен");
         } else if (entry.action === "compact") {
           $("prompt").value = "";
           box.hidden = true;
@@ -2563,7 +3105,7 @@ async function send() {
   if (view !== "chat") setView("chat");
   if (busy) {
     const result = await granka.queue(question, "followUp");
-    if (!result.ok) return fail(result.error ?? "Очередь недоступна");
+    if (!result.ok) return fail(result.error ?? "Очередь недоступна. Дождитесь ответа и отправьте снова");
     addMessage("user", question);
     $("prompt").value = "";
     autoGrow();
@@ -2586,7 +3128,6 @@ async function send() {
   $("prompt").value = "";
   autoGrow();
   $("suggest").hidden = true;
-  $("composerHint").hidden = true;
   setStatus("");
   setActivity("think");
   renderActivity();
@@ -2606,8 +3147,27 @@ async function send() {
   try { localStorage.removeItem(draftKey()); } catch {}
   try { localStorage.removeItem(`${DRAFT_PREFIX}new`); } catch {}
     if (!result.ok) {
-      const target = streamWrapper ?? addMessage("assistant", "").wrapper;
-      attachError(target, result.error);
+      // Interrupted/failed turn: keep whatever the model already said (the
+      // agent returns it in result.text) and finalize it as markdown —
+      // otherwise the raw <pre> stream and the error box are all that stays.
+      const partial = result.text || streamText;
+      let target;
+      if (streamWrapper && streamBody) {
+        streamBody.classList.remove("isStreaming");
+        if (partial) {
+          renderAssistant(streamWrapper, streamBody, partial);
+          decorateCodeBlocks(streamBody);
+        }
+        target = streamWrapper;
+      } else if (partial) {
+        const created = addMessage("assistant", partial);
+        created.wrapper.__prompt = streamPrompt;
+        target = created.wrapper;
+      } else {
+        target = addMessage("assistant", "").wrapper;
+      }
+      const aborted = /abort|прерван/i.test(result.error ?? "");
+      attachError(target, aborted ? "Ответ прерван" : result.error);
       setStatus("");
     } else {
       if (!streamWrapper) {
@@ -2615,6 +3175,7 @@ async function send() {
         created.wrapper.__prompt = streamPrompt;
         addUsage(created.wrapper, result.usage);
       } else {
+        streamBody.classList.remove("isStreaming");
         renderAssistant(streamWrapper, streamBody, result.text || streamText);
         decorateCodeBlocks(streamBody);
         addUsage(streamWrapper, result.usage);
@@ -2644,7 +3205,7 @@ async function send() {
     setBusy(false);
     syncQueueBadge();
     $("prompt").focus();
-    scrollIf(true);
+    scrollIf(config.autoScroll !== false);
     refreshSessions();
     setTimeout(() => {
       if (!busy) setStatus("");
@@ -2701,7 +3262,7 @@ $("prompt").addEventListener("keydown", (event) => {
       highlightSuggest();
       return;
     }
-    if (event.key === "Tab" || (event.key === "Enter" && suggestIndex >= 0)) {
+    if (event.key === "Enter" && suggestIndex >= 0) {
       event.preventDefault();
       const row = suggestRows()[Math.max(suggestIndex, 0)];
       const entry = row?.__entry;
@@ -2721,12 +3282,8 @@ $("prompt").addEventListener("keydown", (event) => {
       return;
     }
   }
-  if (event.key === "Tab" && event.shiftKey) {
-    event.preventDefault();
-    const ids = Object.keys(AGENT_MODES);
-    setAgentMode(ids[(ids.indexOf(agentMode()) + 1) % ids.length]);
-    return;
-  }
+  // Shift+Tab stays a normal focus move: it must not switch the agent mode
+  // or trap keyboard users inside the composer.
   const sendOnEnter = config.sendOnEnter !== false;
   const wantsSend = sendOnEnter
     ? event.key === "Enter" && !event.shiftKey
@@ -2737,12 +3294,6 @@ $("prompt").addEventListener("keydown", (event) => {
   }
 });
 
-$("prompt").addEventListener("focus", () => {
-  $("composerHint").hidden = false;
-});
-$("prompt").addEventListener("blur", () => {
-  $("composerHint").hidden = true;
-});
 
 let searchTimer;
 $("sessionSearch").addEventListener("input", () => {
@@ -2759,8 +3310,8 @@ function startCompactionBar() {
   bar.id = "compactionBar";
   bar.append(Object.assign(document.createElement("span"), { className: "spinner" }));
   const text = document.createElement("span");
+  text.className = "compactionText";
   text.textContent = "Сжимаю контекст…";
-  text.style.flex = "1";
   const cancel = document.createElement("button");
   cancel.className = "toastAction";
   cancel.textContent = "Отменить";
@@ -2790,6 +3341,8 @@ async function newChat() {
   currentProjectId = activeProjectId;
   setView("chat");
   showEmptyState();
+  plans.delete(planKey());
+  renderPlanStrip();
   showContext(null);
   await refreshSessions();
   restoreDraft();
@@ -2805,7 +3358,6 @@ async function refreshProjects() {
   projects = data.projects;
   activeProjectId = data.active ?? "";
   renderProjectLabel();
-  renderWorkspaceMeta();
 }
 
 async function activateProject(id) {
@@ -2831,7 +3383,6 @@ async function activateProject(id) {
   await refreshSessions();
   await refreshHistory();
   currentProjectId = activeProjectId;
-  renderWorkspaceMeta();
   toast("Проект применён");
 }
 
@@ -2959,18 +3510,21 @@ async function buildProjectPane({ fresh = false, focusName = false } = {}) {
       ? project.name
       : "только для этого проекта";
 
+  const draft = (() => {
+    try { return JSON.parse(localStorage.getItem("granka.projectDraft") ?? "null"); } catch { return null; }
+  })();
   const name = document.createElement("input");
   name.className = "textInput";
   name.id = "projectNameInput";
   name.placeholder = "Имя проекта";
-  name.value = project?.name ?? "";
+  name.value = project && !fresh ? (project.name ?? "") : (draft?.name ?? project?.name ?? "");
 
   const cwdInput = document.createElement("input");
   cwdInput.className = "textInput";
   cwdInput.placeholder = "Папка проекта";
   // Fresh (new project) starts completely empty — no inherited folder,
   // name or rules from the previously open project.
-  cwdInput.value = fresh ? "" : (project?.cwd ?? "");
+  cwdInput.value = fresh ? (draft?.cwd ?? "") : (project?.cwd ?? "");
   const pick = document.createElement("button");
   pick.className = "ghostBtn";
   pick.textContent = "Выбрать…";
@@ -2992,7 +3546,7 @@ async function buildProjectPane({ fresh = false, focusName = false } = {}) {
   async function reloadRulesForCwd() {
     const dir = cwdInput.value.trim();
     const rules = await granka.getRulesForPath(dir);
-    instructions.value = rules.text ?? "";
+    instructions.value = project && !fresh ? (rules.text ?? "") : (draft?.instructions ?? rules.text ?? "");
     rulesHint.textContent = rules.exists
       ? `Загружен из ${rules.path}`
       : dir
@@ -3014,6 +3568,24 @@ async function buildProjectPane({ fresh = false, focusName = false } = {}) {
   cwdRow.append(cwdInput, pick);
 
   const rules = project ? await granka.getProjectRules(project.id) : { ok: true, text: "", path: "" };
+  const memory = project ? await granka.getProjectMemory(project.id) : { ok: true, text: "" };
+  const memoryHint = document.createElement("div");
+  memoryHint.className = "hint";
+  const updateMemoryHint = () => {
+    const text = memoryArea.value;
+    const lines = text ? text.split("\n").length : 0;
+    memoryHint.textContent = lines > 200 || text.length > 25 * 1024
+      ? `Память: ${lines} строк — больше лимита загрузки (200 строк / 25 КБ), почистите.`
+      : `Память: ${lines} строк. Заметки агента, не правила.`;
+  };
+  const memoryArea = document.createElement("textarea");
+  memoryArea.className = "panelTextarea";
+  memoryArea.id = "projectMemoryArea";
+  memoryArea.placeholder = "Заметки агента для этого проекта: факты, исправления, контекст (не правила)";
+  memoryArea.value = memory.text ?? "";
+  memoryArea.rows = 6;
+  memoryArea.addEventListener("input", updateMemoryHint);
+  updateMemoryHint();
   const instructions = document.createElement("textarea");
   instructions.className = "panelTextarea";
   instructions.id = "projectRulesArea";
@@ -3057,11 +3629,21 @@ async function buildProjectPane({ fresh = false, focusName = false } = {}) {
     },
   });
 
+  const saveDraft = () => {
+    try {
+      localStorage.setItem("granka.projectDraft", JSON.stringify({
+        name: name.value, cwd: cwdInput.value, instructions: instructions.value,
+      }));
+    } catch {}
+  };
+  name.addEventListener("input", saveDraft);
+  cwdInput.addEventListener("input", saveDraft);
+  instructions.addEventListener("input", saveDraft);
   const saveProject = document.createElement("button");
-  saveProject.className = "ghostBtn";
+  saveProject.className = "primaryBtn";
   saveProject.textContent = project ? "Сохранить проект" : "Создать проект";
   saveProject.addEventListener("click", async () => {
-    if (!name.value.trim()) return fail("Нужно имя проекта");
+    if (!name.value.trim()) return fail("Введите имя проекта");
     const result = await granka.saveProject({
       id: project?.id,
       name: name.value,
@@ -3071,11 +3653,14 @@ async function buildProjectPane({ fresh = false, focusName = false } = {}) {
       thinkingLevel: profileThinkingValue,
     });
     if (!result.ok) return fail(result.error);
+    try { localStorage.removeItem("granka.projectDraft"); } catch {}
 
     if (cwdInput.value.trim()) {
       const savedRules = await granka.saveProjectRules(result.id, instructions.value);
       if (!savedRules.ok) return fail(savedRules.error);
     }
+    const savedMemory = await granka.saveProjectMemory(result.id, memoryArea.value);
+    if (!savedMemory.ok) return fail(savedMemory.error);
     await refreshProjects();
     if (!project) await activateProject(result.id);
     await buildProjectPane(); // show the just-saved project in edit mode
@@ -3091,6 +3676,8 @@ async function buildProjectPane({ fresh = false, focusName = false } = {}) {
     cwdHint,
     labeled("Проектный AGENTS.md", instructions),
     rulesHint,
+    labeled("Память проекта", memoryArea),
+    memoryHint,
     labeled("Модель проекта", profileModel.element),
     labeled("Уровень мышления", profileThinking.element),
     profileHint,
@@ -3100,11 +3687,15 @@ async function buildProjectPane({ fresh = false, focusName = false } = {}) {
   if (fresh || focusName) name.focus();
 }
 
+let fieldSeq = 0;
 function labeled(text, control) {
   const box = document.createElement("div");
   box.className = "field";
   const label = document.createElement("label");
   label.textContent = text;
+  const id = control.id || `field-${++fieldSeq}`;
+  control.id = id;
+  label.htmlFor = id;
   box.append(label, control);
   return box;
 }
@@ -3114,9 +3705,10 @@ function labeled(text, control) {
 async function buildSessionsPane() {
   const pane = $("sessionsPane");
   pane.replaceChildren();
+  selectedSessions.clear();
 
   sessionsAll = await granka.listSessions("");
-  $("sessionsMeta").textContent = `${sessionsAll.length} диалогов · ~/.granka`;
+  $("sessionsMeta").textContent = `${plural(sessionsAll.length, ["диалог", "диалога", "диалогов"])} · ~/.granka`;
 
   const toolbar = document.createElement("div");
   toolbar.className = "bulkBar";
@@ -3129,12 +3721,12 @@ async function buildSessionsPane() {
   bulkCount.className = "bulkCount";
   const exportButton = document.createElement("button");
   exportButton.className = "ghostBtn";
-  exportButton.textContent = "Экспорт";
+  exportButton.textContent = "Скопировать Markdown";
   exportButton.addEventListener("click", async () => {
     const ids = [...selectedSessions];
     if (!ids.length) return;
     const result = await granka.exportSessions(ids);
-    if (!result.ok) return fail(result.error ?? "не удалось экспортировать");
+    if (!result.ok) return fail(result.error ?? "Не удалось скопировать Markdown. Повторите попытку");
     await copyText(result.text);
     toast(`Скопировано в буфер: ${ids.length} диалог(ов) в Markdown`);
   });
@@ -3144,6 +3736,8 @@ async function buildSessionsPane() {
   deleteButton.addEventListener("click", async () => {
     const ids = [...selectedSessions];
     if (!ids.length) return;
+    const ok = await granka.confirm(`Удалить выбранные диалоги (${ids.length})?`, "Удалённые диалоги нельзя восстановить.");
+    if (!ok) return;
     for (const id of ids) await granka.deleteSession(id);
     selectedSessions.clear();
     if (ids.includes(currentSessionId)) {
@@ -3229,6 +3823,8 @@ async function buildSessionsPane() {
       remove.className = "ghostBtn danger";
       remove.textContent = "Удалить";
       remove.addEventListener("click", async () => {
+        const ok = await granka.confirm(`Удалить диалог «${item.title}»?`, "Диалог будет удалён без возможности восстановления.");
+        if (!ok) return;
         const result = await granka.deleteSession(item.id);
         if (!result.ok) return;
         sessionsAll = sessionsAll.filter((entry) => entry.id !== item.id);
@@ -3237,10 +3833,10 @@ async function buildSessionsPane() {
           currentSessionId = "";
           await refreshHistory();
         }
-        $("sessionsMeta").textContent = `${sessionsAll.length} диалогов · ~/.granka`;
+        $("sessionsMeta").textContent = `${plural(sessionsAll.length, ["диалог", "диалога", "диалогов"])} · ~/.granka`;
         render();
         await refreshSessions();
-        toast("Сессия удалена");
+        toast("Диалог удалён");
       });
       row.append(checkbox, main, rename, remove);
       list.append(row);
@@ -3249,11 +3845,11 @@ async function buildSessionsPane() {
   };
 
   const searchWrap = document.createElement("label");
-  searchWrap.className = "searchField";
-  searchWrap.style.maxWidth = "var(--col)";
+  searchWrap.className = "searchField sessionsSearch";
   searchWrap.append(svgIcon("search"));
   const search = document.createElement("input");
   search.id = "allSessionsSearch";
+  search.setAttribute("aria-label", "Поиск по диалогам");
   search.placeholder = "Поиск по названию";
   search.addEventListener("input", render);
   searchWrap.append(search);
@@ -3272,16 +3868,16 @@ $("segmentProject").addEventListener("click", () => setView("project"));
 $("menuBtn").addEventListener("click", () => {
   openPopover($("menuBtn"), (panel) => {
     panel.append(
-      popoverItem("Новый диалог", { icon: "plus", onSelect: newChat }),
-      popoverItem("Все сессии", { icon: "layers", onSelect: () => setView("sessions") }),
+      popoverItem("Новый диалог", { icon: "plus", meta: isMac ? "⌘N" : "Ctrl+N", onSelect: newChat }),
+      popoverItem("Все диалоги", { icon: "layers", meta: isMac ? "⌘⇧L" : "Ctrl+Shift+L", onSelect: () => setView("sessions") }),
       popoverItem("Аналитика", { icon: "chart", onSelect: () => setView("stats") }),
-      popoverItem("Проект", { icon: "settings-2", onSelect: () => setView("project") }),
+      popoverItem("Проект", { icon: "folder", onSelect: () => setView("project") }),
       Object.assign(document.createElement("div"), { className: "popoverSeparator" }),
       popoverItem("Сжать контекст", {
         icon: "archive",
         onSelect: () => compactNow(),
       }),
-      popoverItem("Настройки…", { icon: "settings-2", onSelect: () => granka.openSettings() }),
+      popoverItem("Настройки…", { icon: "settings-2", meta: isMac ? "⌘," : "Ctrl+,", onSelect: () => granka.openSettings() }),
     );
   });
 });
@@ -3308,13 +3904,15 @@ granka.onConfigChanged((next) => {
   renderModelLabel();
   renderThinking();
   renderMode();
-  renderWorkspaceMeta();
 });
 
 granka.onMenu((action) => {
   if (action === "new-chat") newChat();
   else if (action === "all-sessions") setView("sessions");
   else if (action === "toggle-sidebar") toggleSidebar();
+  else if (action === "stats") setView("stats");
+  else if (action === "project") setView("project");
+  else if (action === "compact") compactNow();
 });
 
 document.addEventListener("keydown", (event) => {
@@ -3326,12 +3924,16 @@ document.addEventListener("keydown", (event) => {
       return;
     }
     if (view !== "chat") return setView("chat");
+    if (busy) {
+      granka.abort();
+      return;
+    }
     if ($("prompt").value) {
+      saveDraft();
       $("prompt").value = "";
       autoGrow();
       return;
     }
-    if (busy) granka.abort();
     return;
   }
   if (mod && event.key.toLowerCase() === "n") {
@@ -3366,8 +3968,11 @@ async function syncMaximizedIcon() {
   const use = $("winMax").querySelector("use");
   use.setAttribute("href", maximized ? "#i-minimize-2" : "#i-maximize-2");
   $("winMax").title = maximized ? "Восстановить" : "Развернуть";
+  $("winMax").setAttribute("aria-label", $("winMax").title);
+  $("winMax").setAttribute("aria-pressed", String(maximized));
 }
 
+$("winMin").addEventListener("click", () => granka.windowMinimize());
 $("winMax").addEventListener("click", async () => {
   await granka.windowToggleMaximize();
   syncMaximizedIcon();
@@ -3388,7 +3993,6 @@ window.addEventListener("focus", async () => {
     applyTheme();
     renderModelLabel();
     renderThinking();
-    renderWorkspaceMeta();
   }
 });
 
@@ -3401,6 +4005,12 @@ function showOnboardingStep(step) {
   for (const index of [1, 2, 3]) {
     $(`onboardingStep${index}`).hidden = index !== step;
   }
+  const dialog = document.querySelector(".onboardingDialog");
+  const heading = $(`onboardingStep${step}`)?.querySelector("h2");
+  if (heading) {
+    if (!heading.id) heading.id = `onboardingTitle${step}`;
+    dialog.setAttribute("aria-labelledby", heading.id);
+  }
   if (step === 1) $("onboardingKey").focus();
   if (step === 2) $("onboardingCwd").value = config.cwd ?? "";
   if (step === 3) $("onboardingPrompt").focus();
@@ -3408,12 +4018,19 @@ function showOnboardingStep(step) {
 
 function closeOnboarding() {
   $("onboarding").hidden = true;
+  setBackgroundInert(false);
+  $("prompt").focus();
 }
 
 // Onboarding is a modal dialog: keep Tab inside it while visible.
 document.addEventListener("keydown", (event) => {
   const box = $("onboarding");
   if (!box || box.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    $("onboardingSkip").click();
+    return;
+  }
   trapTab(box, event);
 });
 
@@ -3457,6 +4074,18 @@ $("onboardingNext2").addEventListener("click", async () => {
   showOnboardingStep(3);
 });
 
+$("onboardingSkip1").addEventListener("click", async () => {
+  await saveConfig({ onboarded: true });
+  closeOnboarding();
+  await refreshSessions();
+  await refreshHistory();
+});
+$("onboardingSkip2").addEventListener("click", async () => {
+  await saveConfig({ onboarded: true });
+  closeOnboarding();
+  await refreshSessions();
+  await refreshHistory();
+});
 $("onboardingSkip").addEventListener("click", async () => {
   await saveConfig({ onboarded: true });
   closeOnboarding();
@@ -3475,15 +4104,47 @@ $("onboardingStart").addEventListener("click", async () => {
   send();
 });
 
+// --- layout sync: toolbar height and composer overlap -------------------
+
+function syncLayout() {
+  const toolbar = $("toolbar");
+  const composer = $("composer");
+  if (toolbar) {
+    document.documentElement.style.setProperty("--toolbar-h", `${toolbar.offsetHeight}px`);
+  }
+  if (composer) {
+    const overlap = Math.min(composer.offsetHeight, 320);
+    document.documentElement.style.setProperty("--composer-overlap", `${overlap}px`);
+    document.documentElement.style.setProperty("--log-pad-b", `${overlap + 24}px`);
+  }
+}
+if ("ResizeObserver" in window) {
+  const ro = new ResizeObserver(() => syncLayout());
+  ro.observe($("toolbar"));
+  ro.observe($("composer"));
+}
+window.addEventListener("resize", syncLayout);
+
 // --- boot -----------------------------------------------------------------
 
 if (localStorage.getItem("granka.sidebar") === "hidden") document.body.classList.add("noSidebar");
+{
+  const savedWidth = Number(localStorage.getItem("granka.sidebarWidth"));
+  if (savedWidth >= SIDEBAR_MIN && savedWidth <= SIDEBAR_MAX) {
+    document.documentElement.style.setProperty("--sidebar-w", `${savedWidth}px`);
+  }
+}
+initSidebarResize();
 syncScrollButton();
 syncMaximizedIcon();
 
 (async () => {
   const paths = await granka.paths();
   agentDir = paths.agentDir;
+  try {
+    const version = await granka.version();
+    if (version) $("sidebarVersion").textContent = `v${version}`;
+  } catch {}
   config = await granka.loadConfig();
   applyTheme();
   applyAccent();
@@ -3504,6 +4165,7 @@ syncMaximizedIcon();
 
   if (config.onboarded !== true) {
     $("onboarding").hidden = false;
+    setBackgroundInert(true);
     $("onboardingKey").value = "";
     $("onboardingKey").placeholder = config.hasApiKey ? "Ключ задан" : "sk-or-v1-…";
     showOnboardingStep(1);

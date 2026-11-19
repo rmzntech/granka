@@ -6,6 +6,12 @@ import { htmlToText, createGrankaTools } from "../electron/tools.mjs";
 
 await agent.init();
 
+// The session's tool set depends on the user's agentMode (auto hides
+// ask_user by design), so pin chat mode for the duration of the test and
+// restore the user's setting afterwards.
+const savedMode = agent.loadConfig().agentMode;
+await agent.applyConfig({ agentMode: "chat", planMode: false });
+
 // 1. the tools are registered on a live session
 const tools = createGrankaTools({
   getPi: () => null,
@@ -26,12 +32,15 @@ for (const tool of Object.values(tools)) {
   assert.equal(typeof tool.execute, "function");
 }
 
-// 1b. the live session exposes them to the model
+// 1b. the live session exposes them to the model (a fresh session: reopening
+// a file created under another mode keeps that mode's tool set)
+await agent.newSession();
 const active = await agent.toolNames();
 for (const name of ["todo_write", "ask_user", "web_search", "web_fetch", "task"]) {
   assert.ok(active.includes(name), `session must expose ${name}, got: ${active.join(",")}`);
 }
 console.log(`active tools: ${active.join(", ")}`);
+await agent.applyConfig({ agentMode: savedMode });
 
 // 1c. subagents: several roles, each with its own prompt and tool subset
 const { SUBAGENTS, SUBAGENT_IDS, subagentList } = await import("../electron/subagents.mjs");
@@ -105,6 +114,46 @@ console.log(`subagents: ${SUBAGENT_IDS.join(", ")}`);
   assert.ok(recorded.length >= 1, "subagent usage must be recorded");
   assert.equal(recorded[0].modelId, parentModel.id, "usage recorded under the parent model");
   console.log("subagent model inheritance ok");
+
+  // background subagent: returns immediately, result lands in the registry
+  // and in the pending queue for the parent's next turn
+  const bg = await hostTools.subagentTool.execute("t4", { agent: "explore", description: "bg", prompt: "find y", background: true });
+  assert.equal(bg.details.background, true, "background call returns immediately");
+  assert.ok(bg.details.taskId, "background call returns a task id");
+  await new Promise((r) => setTimeout(r, 50));
+  const { listBackgroundTasks, drainBackgroundResults } = await import("../electron/tools.mjs");
+  const tasks = listBackgroundTasks();
+  const mine = tasks.find((task) => task.id === bg.details.taskId);
+  assert.ok(mine, "background task is in the registry");
+  assert.equal(mine.status, "done", "background task finished");
+  assert.ok(mine.text.length > 0, "background task has a result");
+  const drained = drainBackgroundResults();
+  assert.ok(drained.some((r) => r.description === "bg"), "result queued for the next turn");
+  console.log("background subagent ok");
+
+  // cancellation reaches the running child and never queues a result
+  fakePi.createAgentSession = async () => ({
+    session: {
+      ...fakeSession,
+      sessionManager: { getSessionId: () => "sub-cancel" },
+      async prompt() { await new Promise((_resolve, reject) => { cancelPrompt = reject; }); },
+      getLastAssistantText: () => "never",
+    },
+  });
+  let cancelPrompt = null;
+  const toCancel = await hostTools.subagentTool.execute("t5", {
+    agent: "explore", description: "cancel me", prompt: "wait", background: true,
+  });
+  for (let i = 0; i < 20 && !cancelPrompt; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(cancelPrompt, "background child started");
+  const { cancelBackgroundTask } = await import("../electron/tools.mjs");
+  assert.equal(cancelBackgroundTask(toCancel.details.taskId).ok, true);
+  cancelPrompt(new Error("aborted"));
+  await new Promise((r) => setTimeout(r, 20));
+  const stopped = listBackgroundTasks().find((task) => task.id === toCancel.details.taskId);
+  assert.equal(stopped.status, "canceled", "canceled task is marked accordingly");
+  assert.ok(!drainBackgroundResults().some((r) => r.description === "cancel me"), "canceled result is not queued");
+  console.log("background cancellation ok");
 }
 
 // 2. html_to_text keeps readable text and drops scripts/markup
@@ -135,7 +184,7 @@ globalThis.fetch = async () => {
 };
 const result = await offline.execute("t1", { query: "electron" }, undefined, undefined, {});
 globalThis.fetch = originalFetch;
-assert.match(result.content[0].text, /Поиск ничего не вернул|источники недоступны/);
+assert.match(result.content[0].text, /Search returned nothing|sources unavailable/);
 
 // 4. a bad URL is rejected before any network call
 const fetchTool = createGrankaTools(offlineHost).webFetchTool;
@@ -155,9 +204,13 @@ assert.match(ssrf.content[0].text, /заблокирован/);
 
 // 6. config whitelist: unknown keys and bad hooks/mcp shapes are dropped/rejected
 assert.deepEqual(agent.sanitizeConfigPatch({ theme: "dark", evil: 1, projects: [] }), { theme: "dark" });
+assert.deepEqual(agent.sanitizeConfigPatch({ compactionThreshold: 90 }), { compactionThreshold: 90 });
 assert.equal(agent.sanitizeConfigPatch({ hooks: { afterEdit: 42 } }), null);
 assert.equal(agent.sanitizeConfigPatch({ mcpServers: { s: { command: "" } } }), null);
 assert.deepEqual(agent.sanitizeConfigPatch({ mcpServers: { s: { command: "npx", args: [] } } }), { mcpServers: { s: { command: "npx", args: [] } } });
+assert.equal(agent.sanitizeConfigPatch({ mcpServers: { s: { command: "npx", disabled: "yes" } } }), null);
+const { mcpStatus } = await import("../electron/mcp.mjs");
+assert.equal(mcpStatus({ s: { command: "npx", disabled: true } }).s, "off", "disabled MCP server reports off without spawning");
 
 // 7. confirmation setting: allow/ask only, unknown values fall back in UI
 assert.deepEqual(agent.sanitizeConfigPatch({ confirmBashWrite: "allow" }), { confirmBashWrite: "allow" });

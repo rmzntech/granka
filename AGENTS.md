@@ -22,12 +22,12 @@
 | `renderer/app.css` | токены дизайна, компоненты, анимации, плотность |
 | `renderer/markdown.js` | минимальный markdown (таблицы GFM, цитаты, код) |
 | `renderer/select.js` | кастомные дропдауны + строки моделей (имя/цена/groups) |
-| `renderer/themes.js` | 13 тем и вычисление контрастного текста на акценте |
+| `renderer/themes.js` | 15 тем и вычисление контрастного текста на акценте |
 | `renderer/fonts.css`, `renderer/fonts/` | Inter + JetBrains Mono (OFL), подключены локально |
 | `renderer/settings.*` | отдельное окно настроек (7 разделов) |
 | `test/` | node-тесты логики и Electron-тесты интерфейса |
 | `packaging/arch/` | `PKGBUILD`, desktop-файл, launcher, install-скрипт |
-| `packaging/build-arch.sh` | сборка Arch-пакета в локальный репозиторий `~/pacman-myapp` |
+| `packaging/build-arch.sh` | сборка Arch-пакета в локальный репозиторий `/srv/myapp-repo` |
 | `build/` | иконки для сборки (`icons.svg` → png/ico) |
 | `dist/` | готовые артефакты (`granka-<ver>-portable.exe`) |
 
@@ -46,7 +46,7 @@
   версия в маркере; пользовательские правила — `AGENTS.md` (глобальные) и
   инструкции проекта.
 - Модель/thinking/стиль у проекта свои: применяются в `activateProject`.
-- Язык UI и промптов — русский; код, идентификаторы и коммиты — английский.
+- Системный промпт — всегда английский; язык UI и ответов пользователю — русский; код, идентификаторы и коммиты — английский.
 
 ## Правила работы
 
@@ -77,11 +77,11 @@ npm run test:all      # всё подряд
 
 1. **Никогда не собирать пакеты «заодно»** при обычных правках кода.
 2. Собирать **только ту платформу, которую попросили**: попросили Windows —
-   собирается только `.exe`; попросили Arch — только пакет в `~/pacman-myapp`.
+   собирается только `.exe`; попросили Arch — только пакет в `/srv/myapp-repo`.
    Вторую платформу «для симметрии» не трогать.
 3. Версию поднимать только если об этом сказали; иначе оставить прежнюю.
 4. Инструменты:
-   - Arch: `./packaging/build-arch.sh` (без sudo, кладёт пакет в `~/pacman-myapp`
+   - Arch: `./packaging/build-arch.sh` (без sudo, кладёт пакет в `/srv/myapp-repo`
      и обновляет `myapp.db`); установка — `./packaging/install-arch.sh` (нужен sudo,
      запускает пользователь).
    - Windows: `electron-builder --win portable --publish never` → `dist/*.exe`

@@ -6,9 +6,13 @@
   let anchor = null;
 
   function close() {
+    const hadFocus = panel && (panel.contains(document.activeElement) || anchor === document.activeElement);
     panel?.remove();
     panel = null;
-    anchor?.setAttribute("aria-expanded", "false");
+    if (anchor) {
+      anchor.setAttribute("aria-expanded", "false");
+      if (hadFocus) anchor.focus();
+    }
     anchor = null;
   }
 
@@ -168,7 +172,7 @@
     const input = model?.cost?.input ?? 0;
     const output = model?.cost?.output ?? 0;
     if (input === 0 && output === 0) return "free";
-    return `${input}$/${output}$`;
+    return `${input}$/${output}$ за 1M`;
   }
 
   function isFree(model) {
@@ -190,6 +194,7 @@
     company.className = "modelCompany";
     company.textContent = modelCompany(model.id);
     pick.append(name, company);
+    if (current) pick.append(check());
     pick.addEventListener("click", () => onSelect(model.id));
     row.append(pick);
 
@@ -221,7 +226,7 @@
   function renderModelRows(container, { models, favorites = [], current, query = "", onSelect, onToggleFavorite, limit = 80 }) {
     const needle = String(query ?? "").trim().toLowerCase();
     const matches = models.filter(
-      (model) => !needle || model.id.toLowerCase().includes(needle),
+      (model) => !needle || model.id.toLowerCase().includes(needle) || modelName(model.id).toLowerCase().includes(needle) || modelCompany(model.id).toLowerCase().includes(needle),
     );
     const favoriteSet = new Set(favorites);
     const favoritesList = matches.filter((model) => favoriteSet.has(model.id));
@@ -250,6 +255,12 @@
     section("★ Избранные", favoritesList);
     section("Бесплатные", free);
     section("Платные", paid);
+    if (container.querySelectorAll(".modelRow").length >= limit) {
+      const more = document.createElement("div");
+      more.className = "modelEmpty";
+      more.textContent = "Показаны первые модели — уточните поиск";
+      container.append(more);
+    }
 
     if (!container.childElementCount) {
       const empty = document.createElement("div");
@@ -259,6 +270,32 @@
     }
   }
 
-  globalThis.grankaSelect = { create, close };
+  // DESIGN.md segmented control for 2-4 mutually exclusive options.
+  function createSegment({ options = [], value, onChange, ariaLabel }) {
+    const wrap = document.createElement("div");
+    wrap.className = "segmented";
+    wrap.setAttribute("role", "radiogroup");
+    if (ariaLabel) wrap.setAttribute("aria-label", ariaLabel);
+    for (const option of options) {
+      const button = document.createElement("button");
+      button.className = `segment${option.value === value ? " isActive" : ""}`;
+      button.type = "button";
+      button.textContent = option.label;
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", String(option.value === value));
+      button.addEventListener("click", async () => {
+        if (button.classList.contains("isActive")) return;
+        for (const sibling of wrap.querySelectorAll(".segment")) {
+          sibling.classList.toggle("isActive", sibling === button);
+          sibling.setAttribute("aria-checked", String(sibling === button));
+        }
+        await onChange?.(option.value);
+      });
+      wrap.append(button);
+    }
+    return { element: wrap };
+  }
+
+  globalThis.grankaSelect = { create, close, createSegment };
   globalThis.grankaModels = { modelName, modelCompany, modelPrice, isFree, renderModelRows };
 })();

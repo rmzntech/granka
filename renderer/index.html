@@ -48,9 +48,11 @@
     <symbol id="i-ellipsis" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /><circle cx="5" cy="12" r="1" /></symbol>
     <symbol id="i-quote" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17 6H3" /><path d="M21 12H8" /><path d="M21 18H8" /><path d="M3 12v6" /></symbol>
     <symbol id="i-repeat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></symbol>
+    <symbol id="i-tray" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></symbol>
     <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" /><path d="m6.08 11.5-3.48 1.58a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.84L18 11.5" /></symbol>
   </svg>
 
+  <div id="shell">
   <header id="toolbar">
     <button class="iconBtn" id="sidebarToggle" title="Боковая панель (⌘B)" aria-label="Боковая панель">
       <svg class="icon"><use href="#i-panel-left" /></svg>
@@ -60,39 +62,42 @@
       <button class="segment" id="segmentProject" role="tab" aria-selected="false">Проект</button>
     </div>
 
-    <span class="titlebarMeta" id="titlebarMeta"></span>
+    <span class="chatTitle" id="chatTitle" title=""></span>
 
     <div class="toolbarSpacer"></div>
 
-    <button class="popupBtn" id="modePopup" title="Режим работы" aria-label="Режим работы" aria-haspopup="menu">
+    <button class="popupBtn" id="modePopup" title="Режим работы" aria-label="Режим работы" aria-haspopup="dialog">
       <svg class="icon"><use href="#i-message-circle" /></svg>
       <span id="modeName">Чат</span>
       <svg class="icon chevron"><use href="#i-chevron-down" /></svg>
     </button>
 
-    <button class="popupBtn" id="brainPopup" title="Модель и мышление" aria-label="Модель и мышление" aria-haspopup="menu">
+    <button class="popupBtn" id="brainPopup" title="Модель и мышление" aria-label="Модель и мышление" aria-haspopup="dialog">
       <svg class="icon"><use href="#i-brain" /></svg>
-      <span id="brainLevel">off</span>
+      <span id="brainLevel">Модель</span>
       <svg class="icon chevron"><use href="#i-chevron-down" /></svg>
     </button>
 
-    <span class="meter" id="ctx" title="Заполнение контекста"></span>
+    <button class="meter meterBtn" id="ctx" title="Заполнение контекста" aria-label="Контекст"></button>
 
-    <button class="iconBtn" id="menuBtn" title="Меню" aria-label="Меню" aria-haspopup="menu">
-      <svg class="icon"><use href="#i-settings-2" /></svg>
+    <button class="iconBtn" id="menuBtn" title="Меню" aria-label="Меню" aria-haspopup="dialog">
+      <svg class="icon"><use href="#i-ellipsis" /></svg>
     </button>
 
     <div id="windowControls">
+      <button class="winBtn" id="winMin" title="Свернуть" aria-label="Свернуть"><svg class="icon"><use href="#i-minus" /></svg></button>
       <button class="winBtn" id="winMax" title="Развернуть" aria-label="Развернуть"><svg class="icon"><use href="#i-minimize-2" /></svg></button>
       <button class="winBtn isClose" id="winClose" title="Закрыть" aria-label="Закрыть"><svg class="icon"><use href="#i-x" /></svg></button>
     </div>
   </header>
 
-  <div id="shell">
     <aside id="sidebar" aria-label="Боковая панель">
-      <button class="sidebarPopup" id="projectPopup" aria-haspopup="menu">
+      <button class="sidebarPopup" id="projectPopup" aria-haspopup="dialog">
         <svg class="icon"><use href="#i-folder" /></svg>
-        <span id="projectName">Проект</span>
+        <span class="projectCardText">
+          <span id="projectName">Проект</span>
+          <span class="projectCardMeta" id="projectCardMeta"></span>
+        </span>
         <svg class="icon chevron"><use href="#i-chevron-down" /></svg>
       </button>
 
@@ -112,13 +117,18 @@
         <span class="rowCount" id="sessionCount"></span>
       </button>
 
+      <span class="sidebarCaption">Диалоги</span>
       <div id="sessionList" role="list" aria-label="Диалоги" tabindex="0"></div>
+
+      <div class="sidebarFooter">
+        <span class="sidebarVersion" id="sidebarVersion"></span>
+      </div>
     </aside>
 
     <main id="content">
       <section id="chatView">
         <div id="logWrap">
-          <div id="log" role="log"></div>
+          <div id="log" role="log" aria-label="Лента диалога" aria-busy="false"></div>
           <div id="dropOverlay" hidden>
             <span>Отпустите файлы, чтобы прикрепить</span>
           </div>
@@ -128,7 +138,7 @@
         </div>
 
         <div id="composer">
-          <div id="suggest" hidden role="list" aria-label="Команды"></div>
+          <div id="suggest" hidden role="listbox" aria-label="Команды"></div>
           <div id="toasts" aria-live="polite"></div>
           <div id="planStrip" class="planStrip" hidden>
             <div class="planStripHead">
@@ -144,10 +154,20 @@
             <div class="planProgress" aria-hidden="true"><span id="planProgressFill"></span></div>
             <div class="planStripItems" id="planStripItems"></div>
           </div>
+          <div id="bgPanel" class="bgPanel" hidden>
+            <div class="planStripHead">
+              <span class="planStripTitle">Фоновые задачи</span>
+              <span id="bgPanelCount" class="planStripCount"></span>
+              <button class="planStripClear" id="bgPanelToggle" aria-expanded="true" title="Свернуть панель" aria-label="Свернуть панель фоновых задач">
+                <svg class="icon"><use href="#i-chevron-down" /></svg>
+              </button>
+            </div>
+            <div class="bgPanelItems" id="bgPanelItems"></div>
+          </div>
           <div id="attachments" hidden></div>
           <div class="composerBox">
             <button class="iconBtn attachBtn" id="attachBtn" title="Добавить файл" aria-label="Добавить файл">
-              <svg class="icon"><use href="#i-plus" /></svg>
+              <svg class="icon"><use href="#i-paperclip" /></svg>
             </button>
             <textarea id="prompt" rows="1" placeholder="Сообщение…" aria-label="Сообщение"></textarea>
             <div class="composerActions">
@@ -157,11 +177,9 @@
               </button>
               <button class="prominentBtn" id="send" title="Отправить (Enter)" aria-label="Отправить">
                 <svg class="icon"><use href="#i-arrow-up" /></svg>
+                <span class="queueBadge" id="queueBadge" hidden></span>
               </button>
             </div>
-          </div>
-          <div class="composerHint" id="composerHint" hidden>
-            Enter — отправить · Shift+Enter — новая строка · «/» — команды
           </div>
         </div>
       </section>
@@ -222,6 +240,7 @@
         <div class="onboardingActions">
           <span class="onboardingStatus" id="onboardingStatus"></span>
           <button class="ghostBtn" id="onboardingCheck">Проверить</button>
+          <button class="ghostBtn" id="onboardingSkip1">Пропустить</button>
           <button class="prominentBtn onboardingNext" id="onboardingNext1" title="Далее" aria-label="Далее">
             <svg class="icon"><use href="#i-arrow-right" /></svg>
           </button>
@@ -237,6 +256,7 @@
         </div>
         <div class="onboardingActions">
           <button class="ghostBtn" id="onboardingBack2">Назад</button>
+          <button class="ghostBtn" id="onboardingSkip2">Пропустить</button>
           <button class="prominentBtn onboardingNext" id="onboardingNext2" title="Далее" aria-label="Далее">
             <svg class="icon"><use href="#i-arrow-right" /></svg>
           </button>
@@ -246,7 +266,7 @@
       <div class="onboardingStep" id="onboardingStep3" hidden>
         <h2>Первый вопрос</h2>
         <p class="onboardingText">Например: «объясни, что делает этот репозиторий».</p>
-        <textarea class="panelTextarea" id="onboardingPrompt" placeholder="Что спросить у агента?"></textarea>
+        <textarea class="panelTextarea" id="onboardingPrompt" aria-label="Первый вопрос" placeholder="Что спросить у агента?"></textarea>
         <div class="onboardingActions">
           <button class="ghostBtn" id="onboardingBack3">Назад</button>
           <button class="ghostBtn" id="onboardingSkip">Пропустить</button>
@@ -266,11 +286,12 @@
       <div class="questionFreeform" id="questionFreeform">
         <input class="textInput" id="questionInput" placeholder="Свой ответ…" aria-label="Свой ответ" />
         <button class="ghostBtn" id="questionSubmit">Ответить</button>
+        <button class="ghostBtn" id="questionCancel">Пропустить</button>
       </div>
     </div>
   </div>
 
-  <div id="popover" hidden role="menu"></div>
+  <div id="popover" hidden role="dialog" aria-label="Меню"></div>
   <div id="announcer" class="srOnly" aria-live="polite"></div>
 
   <script src="themes.js"></script>

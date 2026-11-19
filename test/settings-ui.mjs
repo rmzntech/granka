@@ -30,6 +30,18 @@ app.whenReady().then(async () => {
     await new Promise((r) => setTimeout(r, 300));
   }
 
+  const mcpUi = await win.webContents.executeJavaScript(`(() => {
+    const area = document.getElementById("mcpServers");
+    area.value = JSON.stringify({ alpha: { command: "cmd" }, beta: { command: "cmd2" } });
+    area.dispatchEvent(new Event("input"));
+    const rows = document.querySelectorAll("#mcpServerList .switchRow").length;
+    const first = document.querySelector("#mcpServerList input");
+    first.checked = false;
+    first.dispatchEvent(new Event("change"));
+    const saved = JSON.parse(area.value);
+    return { rows, disabled: saved.alpha.disabled === true, betaIntact: !saved.beta.disabled };
+  })()`);
+
   const state = await win.webContents.executeJavaScript(`({
     groups: document.querySelectorAll(".settingsPane").length,
     navItems: document.querySelectorAll(".navItem").length,
@@ -45,7 +57,11 @@ app.whenReady().then(async () => {
     compaction: {
       toggle: !!document.getElementById("compactionEnabled"),
       reserve: document.getElementById("compactionReserve")?.value,
+      threshold: document.getElementById("compactionThreshold")?.value,
     },
+    mcpList: !!document.getElementById("mcpServerList"),
+    title: document.title,
+    subheads: document.querySelectorAll("#pane-agent .settingsSubhead").length,
 
     switches: document.querySelectorAll(".switchRow input").length,
     titlebar: !!document.getElementById("settingsTitlebar"),
@@ -54,7 +70,9 @@ app.whenReady().then(async () => {
   console.log(
     `panes=${state.groups} nav=${state.navItems} theme=${state.theme}/${state.resolved} keyFieldType=${state.secure} ` +
       `models=${state.models} prices=${state.prices.join("/")} groups=${state.modelGroups.length} ` +
-      `keyCheck=${state.keyCheck} compaction=${state.compaction.toggle}/${state.compaction.reserve} ` +
+      `keyCheck=${state.keyCheck} compaction=${state.compaction.toggle}/${state.compaction.reserve}/${state.compaction.threshold} ` +
+      `mcpList=${state.mcpList} mcpUi=${mcpUi.rows}/${mcpUi.disabled}/${mcpUi.betaIntact} ` +
+      `title="${state.title}" subheads=${state.subheads} ` +
       `dropdowns=${state.dropdowns} theme="${state.theme}" ` +
       `switches=${state.switches} titlebar=${state.titlebar} consoleErrors=${errors.length}`,
   );
@@ -62,14 +80,18 @@ app.whenReady().then(async () => {
     state.titlebar &&
     state.dropdowns >= 4 &&
     typeof state.theme === "string" && state.theme.length > 0 &&
-    state.navItems === 8 &&
-    state.groups === 8 &&
+    state.navItems === 9 &&
+    state.groups === 9 &&
     state.themeCards >= 15 &&
     state.switches >= 13 &&
     state.prices.length === 3 &&
     state.modelGroups.length >= 2 &&
     state.keyCheck &&
     state.compaction.toggle &&
+    state.compaction.threshold === String(agent.loadConfig().compactionThreshold ?? 80) &&
+    state.mcpList &&
+    mcpUi.rows === 2 && mcpUi.disabled && mcpUi.betaIntact &&
+    state.title.startsWith("Настройки — ") && state.subheads === 5 &&
 
     ["light", "dark"].includes(state.resolved) &&
     state.secure === "password" &&

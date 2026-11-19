@@ -6,6 +6,7 @@ let config = {};
 let models = [];
 let modelValue = "";
 let systemAccent = "";
+let mcpStatuses = {};
 
 const TOGGLES = [
   "continueLast",
@@ -23,6 +24,7 @@ const TOGGLES = [
   "debugTools",
   "cacheRetentionLong",
   "mcpEnabled",
+  "memoryEnabled",
 ];
 
 // --- theme ---------------------------------------------------------------
@@ -57,6 +59,7 @@ function buildThemeCards() {
     card.querySelector(".themeAccent").style.backgroundColor = tokens.accent;
     card.querySelector(".themeCode").style.backgroundColor = tokens.code;
     card.querySelector(".themeCode").style.color = tokens.text2;
+    if (tokens.font) card.querySelector(".themeSample").style.fontFamily = tokens.font;
   };
 
   const makeCard = (id, label, mode) => {
@@ -126,6 +129,8 @@ function buildFontSizeDropdown() {
       { value: "s", label: "Мельче" },
       { value: "m", label: "Обычный" },
       { value: "l", label: "Крупнее" },
+      { value: "xl", label: "Очень крупный" },
+      { value: "xxl", label: "Максимальный" },
     ],
     value: config.fontSize ?? "m",
     onChange: async (value) => {
@@ -153,8 +158,10 @@ async function persistNow(patch, message) {
   const result = await window.granka.saveConfig(patch);
   if (!result.ok) {
     $("status").textContent = result.error;
+    $("status").classList.add("isError");
     return false;
   }
+  if (!$("status").classList.contains("isError")) $("status").textContent = message ?? "";
   config = await window.granka.loadConfig();
   if (message) {
     $("status").textContent = message;
@@ -166,6 +173,14 @@ async function persistNow(patch, message) {
 }
 
 // appearance dropdowns persist immediately and broadcast to every window
+
+$("planMode").addEventListener("change", async () => {
+  const plan = $("planMode").checked;
+  config.planMode = plan;
+  config.agentMode = plan ? "plan" : "chat";
+  await persist({ planMode: plan, agentMode: config.agentMode }, plan ? "Режим плана включён" : "Режим плана выключен");
+  buildAgentModeDropdown();
+});
 
 $("accentSystem").addEventListener("change", async () => {
   config.accentSystem = $("accentSystem").checked;
@@ -221,9 +236,9 @@ async function saveKey(silent = true) {
   const ok = await persist({ apiKey: value }, silent ? "" : "Ключ сохранён");
   $("keyStatus").textContent = ok
     ? value
-      ? "Ключ сохранён ✓"
+      ? "Ключ сохранён"
       : "Ключ удалён"
-    : "Не удалось сохранить ключ";
+    : "Ключ не сохранён. Проверьте подключение и повторите";
 }
 
 $("apiKey").addEventListener("input", () => {
@@ -242,11 +257,27 @@ $("checkKey").addEventListener("click", async () => {
     $("keyStatus").textContent = `Ключ не работает: ${result.error}`;
     return;
   }
-  const parts = ["Ключ работает ✓"];
+  const parts = ["Ключ работает"];
   if (result.freeTier) parts.push("бесплатный тариф");
   if (result.limit) parts.push(`лимит $${result.limit}`);
   if (result.usage != null) parts.push(`использовано $${Number(result.usage).toFixed(2)}`);
   $("keyStatus").textContent = parts.join(" · ");
+});
+
+$("bgPick").addEventListener("click", async () => {
+  const picked = await window.granka.pickImage();
+  if (picked) {
+    $("bgImagePath").value = picked;
+    config.backgroundImage = picked;
+    await persist({ backgroundImage: picked }, "Фон выбран");
+    refreshBgPreview();
+  }
+});
+$("bgClear").addEventListener("click", async () => {
+  $("bgImagePath").value = "";
+  config.backgroundImage = "";
+  await persist({ backgroundImage: "" }, "Фон убран");
+  refreshBgPreview();
 });
 
 $("pickDir").addEventListener("click", async () => {
@@ -259,12 +290,10 @@ $("pickDir").addEventListener("click", async () => {
 function buildFontDropdowns() {
   const ui = window.grankaSelect.create({
     ariaLabel: "Шрифт интерфейса",
+    // Only bundled fonts are offered: granka must not depend on system fonts.
     options: [
       { value: "theme", label: "Из темы" },
-      { value: "system", label: "Системный" },
       { value: "inter", label: "Inter (в комплекте)" },
-      { value: "serif", label: "Georgia (серифный)" },
-      { value: "rounded", label: "Rounded" },
     ],
     value: config.uiFont ?? "theme",
     onChange: async (value) => {
@@ -279,9 +308,7 @@ function buildFontDropdowns() {
     ariaLabel: "Шрифт кода",
     options: [
       { value: "theme", label: "Из темы" },
-      { value: "system", label: "Системный моно" },
       { value: "jetbrains", label: "JetBrains Mono (в комплекте)" },
-      { value: "serif", label: "Courier / Georgia" },
     ],
     value: config.codeFont ?? "theme",
     onChange: async (value) => {
@@ -294,7 +321,7 @@ function buildFontDropdowns() {
 }
 
 function buildDensityDropdown() {
-  const density = window.grankaSelect.create({
+  const density = window.grankaSelect.createSegment({
     ariaLabel: "Плотность интерфейса",
     options: [
       { value: "comfortable", label: "Обычная" },
@@ -311,7 +338,7 @@ function buildDensityDropdown() {
 }
 
 function buildThinkingDisplayDropdown() {
-  const thinking = window.grankaSelect.create({
+  const thinking = window.grankaSelect.createSegment({
     ariaLabel: "Мышление модели в чате",
     options: [
       { value: "off", label: "Скрывать" },
@@ -328,7 +355,7 @@ function buildThinkingDisplayDropdown() {
 }
 
 function buildToolDisplayDropdown() {
-  const tool = window.grankaSelect.create({
+  const tool = window.grankaSelect.createSegment({
     ariaLabel: "Вызовы инструментов в чате",
     options: [
       { value: "off", label: "Скрывать полностью" },
@@ -345,7 +372,7 @@ function buildToolDisplayDropdown() {
 }
 
 function buildAgentModeDropdown() {
-  const mode = window.grankaSelect.create({
+  const mode = window.grankaSelect.createSegment({
     ariaLabel: "Режим работы агента",
     options: [
       { value: "chat", label: "Чат" },
@@ -357,6 +384,7 @@ function buildAgentModeDropdown() {
     onChange: async (value) => {
       config.agentMode = value;
       config.planMode = value === "plan";
+      $("planMode").checked = config.planMode;
       await persist({ agentMode: value, planMode: config.planMode }, "Режим работы применён");
     },
   });
@@ -380,7 +408,7 @@ function buildConfirmBashWriteDropdown() {
 }
 
 function buildPresetDropdown() {
-  const preset = window.grankaSelect.create({
+  const preset = window.grankaSelect.createSegment({
     ariaLabel: "Пресет работы",
     options: [
       { value: "economy", label: "Эконом (мышление low)" },
@@ -435,6 +463,12 @@ async function renderSkills() {
     remove.className = "ghostBtn danger";
     remove.textContent = "Удалить";
     remove.addEventListener("click", async () => {
+      const ok = await window.granka.confirm(
+        `Удалить скилл «${skill.name}»?`,
+        "Папка скилла в ~/.granka/skills будет удалена без восстановления.",
+        "Удалить скилл",
+      );
+      if (!ok) return;
       const result = await window.granka.deleteSkill(skill.folder);
       if (!result.ok) return;
       await renderSkills();
@@ -462,6 +496,37 @@ $("importBackup")?.addEventListener("click", async () => {
   $("backupMeta").textContent = result.ok ? `Восстановлено файлов: ${result.restored}. Перезапустите granka.` : result.error;
 });
 
+async function refreshBgPreview() {
+  const path = $("bgImagePath").value.trim();
+  const preview = $("bgPreview");
+  if (!path) { preview.hidden = true; return; }
+  const result = await window.granka.wallpaperDataUrl(path);
+  if (result?.ok) {
+    preview.querySelector(".bgPreviewImg").style.backgroundImage = `url("${result.dataUrl}")`;
+    preview.hidden = false;
+  } else {
+    preview.hidden = true;
+  }
+}
+
+function buildBgFitDropdown() {
+  const fit = window.grankaSelect.create({
+    ariaLabel: "Заполнение фона",
+    options: [
+      { value: "cover", label: "Заполнить (обрезать)" },
+      { value: "contain", label: "Вписать целиком" },
+      { value: "fill", label: "Растянуть" },
+      { value: "auto", label: "Исходный размер" },
+    ],
+    value: config.backgroundFit ?? "cover",
+    onChange: async (value) => {
+      config.backgroundFit = value;
+      await persist({ backgroundFit: value }, "Заполнение фона применено");
+    },
+  });
+  $("bgFitSelect").replaceChildren(fit.element);
+}
+
 function fillForm() {
   // apiKey is masked by main (hasApiKey flag only): never prefill the field.
   $("apiKey").value = "";
@@ -479,17 +544,48 @@ function fillForm() {
   buildAgentModeDropdown();
   buildConfirmBashWriteDropdown();
   buildPresetDropdown();
+  buildBgFitDropdown();
+  $("bgImagePath").value = config.backgroundImage ?? "";
+  $("bgBlur").value = String(config.backgroundBlur ?? 0);
+  $("bgDim").value = String(config.backgroundDim ?? 35);
+  $("bgNoise").value = String(config.backgroundNoise ?? 0);
+  $("bgOpacity").value = String(config.backgroundOpacity ?? 100);
+  for (const [id, key] of [["bgBlur", "backgroundBlur"], ["bgDim", "backgroundDim"], ["bgNoise", "backgroundNoise"], ["bgOpacity", "backgroundOpacity"]]) {
+    $(`${id}Val`).textContent = String($(id).value);
+    $(id).addEventListener("input", () => $(`${id}Val`).textContent = $(id).value);
+    $(id).addEventListener("change", async () => {
+      config[key] = Number($(id).value);
+      await persist({ [key]: config[key] }, "Фон обновлён");
+    });
+  }
+  refreshBgPreview();
   renderSkills();
   applyFonts();
   for (const id of TOGGLES) $(id).checked = config[id] !== false;
   $("compactionEnabled").checked = config.compactionEnabled !== false;
   $("compactionReserve").value = String(config.compactionReserve ?? 16384);
-  $("toolOutputLimit").value = String(config.toolOutputLimit ?? 4000);
+  $("compactionThreshold").value = String(config.compactionThreshold ?? 80);
+  $("toolOutputLimit").value = String(config.toolOutputLimit ?? 16000);
   $("dailyBudget").value = String(config.dailyBudgetUsd ?? 0);
   $("afterEditHook").value = String(config.hooks?.afterEdit ?? "");
+  $("bashAllowlist").value = Array.isArray(config.bashAllowlist) ? config.bashAllowlist.join(", ") : "";
+  window.granka.getMemory?.().then((m) => {
+    if (!m?.ok) return;
+    const text = m.text ?? "";
+    $("globalMemory").value = text;
+    const lines = text ? text.split("\n").length : 0;
+    const kb = Math.round(text.length / 1024);
+    const hint = $("globalMemoryHint");
+    if (hint) {
+      hint.textContent = lines > 200 || text.length > 25 * 1024
+        ? `~/.granka/MEMORY.md: ${lines} строк, ${kb} КБ — больше лимита загрузки (200 строк / 25 КБ), почистите память.`
+        : `~/.granka/MEMORY.md: ${lines} строк, ${kb} КБ. Не смешивайте с правилами: протухшее удаляйте.`;
+    }
+  }).catch(() => {});
   $("mcpServers").value = config.mcpServers && Object.keys(config.mcpServers).length
     ? JSON.stringify(config.mcpServers, null, 2)
     : "";
+  renderMcpServers();
   renderModels();
 }
 
@@ -508,7 +604,7 @@ function parseMcpServers() {
   }
 }
 
-$("save").addEventListener("click", async () => {
+$("save")?.addEventListener("click", async () => {
   const patch = {
     // Never overwrite the stored key with the masked (empty) field value.
     ...(keyDirty ? { apiKey: $("apiKey").value.trim() } : {}),
@@ -519,12 +615,22 @@ $("save").addEventListener("click", async () => {
     searxUrl: $("searxUrl").value.trim(),
     compactionEnabled: $("compactionEnabled").checked,
     compactionReserve: Number($("compactionReserve").value) || 16384,
-    toolOutputLimit: Number($("toolOutputLimit").value) || 4000,
+    compactionThreshold: Math.min(95, Math.max(50, Number($("compactionThreshold").value) || 80)),
+    toolOutputLimit: Number($("toolOutputLimit").value) || 16000,
     dailyBudgetUsd: Number($("dailyBudget").value) || 0,
     hooks: { afterEdit: $("afterEditHook").value.trim() },
+    bashAllowlist: $("bashAllowlist").value.split(",").map((v) => v.trim()).filter(Boolean),
+    backgroundImage: $("bgImagePath").value.trim(),
+    backgroundBlur: Number($("bgBlur").value) || 0,
+    backgroundDim: Number($("bgDim").value) || 0,
+    backgroundNoise: Number($("bgNoise").value) || 0,
+    backgroundOpacity: Number($("bgOpacity").value) || 100,
+    backgroundFit: config.backgroundFit ?? "cover",
     mcpServers: parseMcpServers(),
   };
   for (const id of TOGGLES) patch[id] = $(id).checked;
+  const memoryResult = await window.granka.saveMemory?.($("globalMemory").value ?? "");
+  if (memoryResult && memoryResult.ok === false) $("status").textContent = `Память: ${memoryResult.error}`;
   if (await persist(patch, "Сохранено")) {
     applyTheme();
     await window.granka.applyCompaction();
@@ -538,13 +644,151 @@ for (const button of document.querySelectorAll(".navItem")) {
 }
 
 function activatePane(pane) {
+  const activeItem = [...document.querySelectorAll(".navItem")].find((item) => item.dataset.pane === pane);
+  if (activeItem) {
+    document.title = `Настройки — ${activeItem.textContent.trim()}`;
+    if (config.settingsPane !== pane) {
+      config.settingsPane = pane;
+      void window.granka.saveConfig({ settingsPane: pane }).catch(() => {});
+    }
+  }
   for (const item of document.querySelectorAll(".navItem")) {
-    item.classList.toggle("isActive", item.dataset.pane === pane);
+    const active = item.dataset.pane === pane;
+    item.classList.toggle("isActive", active);
+    item.setAttribute("aria-selected", String(active));
+    item.tabIndex = active ? 0 : -1;
   }
   for (const section of document.querySelectorAll(".settingsPane")) {
     section.classList.toggle("isActive", section.dataset.pane === pane);
+    section.hidden = section.dataset.pane !== pane;
+  }
+  $("settingsPanes").scrollTop = 0;
+  if (pane === "mcp") refreshMcpStatus();
+}
+
+document.querySelectorAll(".navItem").forEach((item, index, all) => {
+  item.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const next = all[(index + (event.key === "ArrowDown" ? 1 : -1) + all.length) % all.length];
+    activatePane(next.dataset.pane);
+    next.focus();
+  });
+});
+
+$("settingsSearch").addEventListener("input", () => {
+  const query = $("settingsSearch").value.trim().toLowerCase();
+  if (!query) {
+    document.querySelectorAll(".settingsPane .field, .settingsPane .switchRow, .settingsSubhead").forEach((el) => { el.hidden = false; });
+    return;
+  }
+  document.querySelectorAll(".settingsSubhead").forEach((el) => { el.hidden = false; });
+  let firstPane = null;
+  for (const pane of document.querySelectorAll(".settingsPane")) {
+    let anyVisible = false;
+    for (const el of pane.querySelectorAll(".field, .switchRow")) {
+      const hit = el.textContent.toLowerCase().includes(query);
+      el.hidden = !hit;
+      if (hit) anyVisible = true;
+    }
+    if (anyVisible && !firstPane) firstPane = pane.dataset.pane;
+  }
+  if (firstPane) activatePane(firstPane);
+  for (const heading of document.querySelectorAll(".settingsSubhead")) {
+    let hasVisible = false;
+    for (let el = heading.nextElementSibling; el && !el.classList.contains("settingsSubhead"); el = el.nextElementSibling) {
+      if ((el.classList.contains("field") || el.classList.contains("switchRow")) && !el.hidden) { hasVisible = true; break; }
+    }
+    heading.hidden = !hasVisible;
+  }
+});
+
+function parseServersForList() {
+  try {
+    const data = JSON.parse($("mcpServers").value.trim() || "{}");
+    return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+  } catch {
+    return null;
   }
 }
+
+function mcpStatusLabel(value, disabled) {
+  if (disabled || value === "off") return "выключен";
+  if (value === "ok") return "подключён";
+  if (typeof value === "string" && value.startsWith("error:")) return value;
+  return "не запущен";
+}
+
+function renderMcpServers() {
+  const list = $("mcpServerList");
+  if (!list) return;
+  const servers = parseServersForList();
+  if (servers === null) {
+    list.replaceChildren();
+    $("mcpServerHint").textContent = "Исправьте JSON ниже, чтобы увидеть список серверов.";
+    return;
+  }
+  const entries = Object.entries(servers).filter(([, spec]) => spec && typeof spec === "object");
+  list.replaceChildren();
+  if (!entries.length) {
+    $("mcpServerHint").textContent = "Серверов нет — добавьте их в JSON ниже.";
+    return;
+  }
+  for (const [name, spec] of entries) {
+    const row = document.createElement("label");
+    row.className = "switchRow";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = !spec.disabled;
+    input.setAttribute("aria-label", `Сервер ${name}`);
+    input.addEventListener("change", () => {
+      const current = parseServersForList();
+      if (!current?.[name]) return;
+      if (input.checked) delete current[name].disabled;
+      else current[name].disabled = true;
+      $("mcpServers").value = JSON.stringify(current, null, 2);
+      renderMcpServers();
+    });
+    const text = document.createElement("span");
+    text.className = "switchText";
+    text.textContent = name;
+    const status = document.createElement("small");
+    status.textContent = mcpStatusLabel(mcpStatuses[name], spec.disabled);
+    text.append(status);
+    row.append(input, text);
+    list.append(row);
+  }
+}
+
+async function refreshMcpStatus() {
+  try { mcpStatuses = (await window.granka.mcpStatus?.()) ?? {}; }
+  catch { mcpStatuses = {}; }
+  renderMcpServers();
+}
+
+$("mcpServers")?.addEventListener("input", renderMcpServers);
+$("mcpRefresh")?.addEventListener("click", refreshMcpStatus);
+
+$("mcpCheck").addEventListener("click", () => {
+  const raw = $("mcpServers").value.trim();
+  if (!raw) {
+    $("mcpStatus").textContent = "Пусто — MCP выключен по сути";
+    return;
+  }
+  try {
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("ожидался объект серверов");
+    for (const [name, srv] of Object.entries(data)) {
+      if (!srv || typeof srv.command !== "string" || !srv.command) {
+        throw new Error(`сервер «${name}»: нет command`);
+      }
+    }
+    $("mcpStatus").textContent = `JSON корректен: серверов ${Object.keys(data).length}`;
+    $("mcpStatus").classList.remove("isError");
+  } catch (err) {
+    $("mcpStatus").textContent = `Ошибка: ${err.message}`;
+  }
+});
 
 window.granka.onSettingsPane((pane) => {
   if (pane) activatePane(pane);
@@ -569,7 +813,12 @@ window.granka.onConfigChanged((next) => {
   for (const id of TOGGLES) $(id).checked = config[id] !== false;
   $("compactionEnabled").checked = config.compactionEnabled !== false;
   $("compactionReserve").value = String(config.compactionReserve ?? 16384);
-  $("toolOutputLimit").value = String(config.toolOutputLimit ?? 4000);
+  $("compactionThreshold").value = String(config.compactionThreshold ?? 80);
+  $("toolOutputLimit").value = String(config.toolOutputLimit ?? 16000);
+});
+
+$("openSubagentsDir")?.addEventListener("click", async () => {
+  await window.granka.revealSubagentsDir();
 });
 
 async function renderSubagents() {
@@ -597,6 +846,20 @@ async function renderSubagents() {
   systemAccent = (await window.granka.accentColor()) || "";
   applyTheme();
   fillForm();
+  const savedPane = config.settingsPane;
+  if (savedPane && document.querySelector(`.navItem[data-pane="${savedPane}"]`)) activatePane(savedPane);
+  try {
+    const v = await window.granka.version();
+    if (v) $("aboutVersionNum").textContent = `Версия ${v}`;
+  } catch {}
+  $("aboutLog").addEventListener("click", async () => {
+    const paths = await window.granka.paths();
+    await window.granka.revealPath(`${paths.agentDir}/logs/granka.log`);
+  });
+  $("aboutBackup").addEventListener("click", async () => {
+    const result = await window.granka.exportBackup();
+    $("backupMeta").textContent = result.ok ? `Сохранено файлов: ${result.files}` : result.error;
+  });
   models = await window.granka.listModels();
   renderModels();
   renderSubagents();

@@ -41,6 +41,7 @@ console.log("markdown ok");
 // h5/h6 and images (https + raster data: only, no SVG)
 assert.match(md("##### Пятый"), /<h5>Пятый<\/h5>/);
 assert.match(md("###### Шестой"), /<h6>Шестой<\/h6>/);
-assert.match(md("![кот](https://example.com/cat.png)"), /<img src="https:\/\/example\.com\/cat\.png"/);
+assert.match(md("![кот](https://example.com/cat.png)"), /href="https:\/\/example\.com\/cat\.png"[^>]*class="extImg"/);
+assert.doesNotMatch(md("![кот](https://example.com/cat.png)"), /<img src="https/);
 assert.doesNotMatch(md("![x](data:image/svg+xml;base64,PHN2Zz4=)"), /<img/);
 assert.doesNotMatch(md("![x](file:///etc/passwd)"), /<img/);

@@ -2,15 +2,14 @@
 // Loaded after themes.js, before app.js/settings.js. Both windows keep a
 // thin applyTheme() wrapper that passes their own media query + config.
 const FONT_STACKS = {
-  system: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Granka Inter", system-ui, sans-serif',
-  inter: '"Granka Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-  serif: 'Georgia, "Times New Roman", "Granka Inter", serif',
-  rounded: '"SF Pro Rounded", "Granka Inter", -apple-system, system-ui, sans-serif',
+  // Only bundled fonts: the app must render identically with no system
+  // fonts installed. Granka Inter ships in renderer/fonts (OFL).
+  system: '"Granka Inter", sans-serif',
+  inter: '"Granka Inter", sans-serif',
 };
 const MONO_STACKS = {
-  system: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-  jetbrains: '"Granka Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
-  serif: '"Iosevka", "Courier New", Georgia, monospace',
+  system: '"Granka Mono", monospace',
+  jetbrains: '"Granka Mono", monospace',
 };
 
 let themeFont = "";
@@ -24,9 +23,11 @@ function applyFonts() {
       ? FONT_STACKS.system
       : themeFont || FONT_STACKS.system;
   const codeChoice = config.codeFont ?? "theme";
+  // "Из темы" falls back to the bundled mono: themes rarely declare their
+  // own, and the system stack dropped the shipped JetBrains Mono entirely.
   const code = codeChoice && codeChoice !== "theme" && codeChoice !== "system"
     ? MONO_STACKS[codeChoice] ?? MONO_STACKS.system
-    : themeMono || MONO_STACKS.system;
+    : themeMono || MONO_STACKS.jetbrains;
   document.documentElement.style.setProperty("--font", ui);
   document.documentElement.style.setProperty("--mono", code);
 }
@@ -42,6 +43,60 @@ function withoutTransitions(mutate) {
   mutate();
   void document.body.offsetHeight;
   requestAnimationFrame(() => themeSwapStyle?.remove());
+}
+
+let wallpaperPath = "";
+let wallpaperLayer = null;
+
+function ensureWallpaperLayer() {
+  if (wallpaperLayer) return wallpaperLayer;
+  wallpaperLayer = document.createElement("div");
+  wallpaperLayer.id = "wallpaper";
+  wallpaperLayer.setAttribute("aria-hidden", "true");
+  const img = document.createElement("div");
+  img.className = "wpImage";
+  const overlay = document.createElement("div");
+  overlay.className = "wpOverlay";
+  wallpaperLayer.append(img, overlay);
+  document.body.prepend(wallpaperLayer);
+  return wallpaperLayer;
+}
+
+async function applyWallpaper() {
+  // The wallpaper belongs to the chat window only: the settings window
+  // keeps a plain themed background.
+  if (window.location.pathname.endsWith("settings.html")) {
+    document.body.dataset.wallpaper = "off";
+    if (wallpaperLayer) wallpaperLayer.hidden = true;
+    return;
+  }
+  const target = config.backgroundImage ?? "";
+  const layer = ensureWallpaperLayer();
+  const img = layer.querySelector(".wpImage");
+  const overlay = layer.querySelector(".wpOverlay");
+  document.documentElement.style.setProperty("--bg-blur", `${Number(config.backgroundBlur ?? 0)}px`);
+  document.documentElement.style.setProperty("--bg-dim", `${Number(config.backgroundDim ?? 35) / 100}`);
+  document.documentElement.style.setProperty("--bg-noise", `${Number(config.backgroundNoise ?? 0) / 100}`);
+  document.documentElement.style.setProperty("--bg-opacity", `${Number(config.backgroundOpacity ?? 100) / 100}`);
+  document.documentElement.style.setProperty("--bg-fit", config.backgroundFit ?? "cover");
+  if (!target) {
+    layer.hidden = true;
+    document.body.dataset.wallpaper = "off";
+    wallpaperPath = "";
+    return;
+  }
+  if (target !== wallpaperPath) {
+    const result = await window.granka.wallpaperDataUrl(target);
+    if (!result?.ok) {
+      layer.hidden = true;
+      document.body.dataset.wallpaper = "off";
+      return;
+    }
+    img.style.backgroundImage = `url("${result.dataUrl}")`;
+    wallpaperPath = target;
+  }
+  layer.hidden = false;
+  document.body.dataset.wallpaper = "on";
 }
 
 function applyThemeShared(isDark, systemAccentValue) {
@@ -61,15 +116,16 @@ function applyThemeShared(isDark, systemAccentValue) {
   document.documentElement.style.setProperty("--text-2", tokens.text2);
   document.documentElement.style.setProperty("--fill-2", tokens.fill2);
   document.documentElement.style.setProperty("--row-active", tokens.rowActive);
-  document.documentElement.style.setProperty("--text-3", `color-mix(in oklab, ${tokens.text} 38%, transparent)`);
+  document.documentElement.style.setProperty("--text-3", tokens.text3Ink ?? tokens.text2);
   const size = config.fontSize ?? "m";
-  const base = size === "l" ? 15 : size === "s" ? 12.5 : 13.5;
+  const base = ({ s: 12.5, m: 14, l: 16, xl: 18, xxl: 21 })[size] ?? 14;
   const prose = config.density === "compact" ? base - 0.5 : base;
   document.documentElement.style.setProperty("--prose", `${prose}px`);
   document.documentElement.style.setProperty(
     "--chevron-img",
     `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='${encodeURIComponent(tokens.text2)}' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m6 9 6 6 6-6'/></svg>")`,
   );
+  applyWallpaper();
   document.body.classList.toggle("noUsage", config.showUsage === false);
   document.body.dataset.density = config.density === "compact" ? "compact" : "comfortable";
 }

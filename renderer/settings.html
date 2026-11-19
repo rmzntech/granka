@@ -22,23 +22,29 @@
     <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /></symbol>
     <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol>
     <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" /></symbol>
     <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></symbol>
   </svg>
 
   <div id="settingsShell">
-    <nav id="settingsNav" aria-label="Разделы настроек">
-      <button class="navItem isActive" data-pane="general">Общие</button>
-      <button class="navItem" data-pane="model">Модель</button>
-      <button class="navItem" data-pane="agent">Агент</button>
-      <button class="navItem" data-pane="tools">Инструменты</button>
-      <button class="navItem" data-pane="mcp">MCP</button>
-      <button class="navItem" data-pane="appearance">Оформление</button>
-      <button class="navItem" data-pane="themes">Темы</button>
-      <button class="navItem" data-pane="skills">Скиллы</button>
+    <nav id="settingsNav" aria-label="Разделы настроек" role="tablist" aria-orientation="vertical">
+      <label class="searchField settingsSearch">
+        <svg class="icon" aria-hidden="true"><use href="#i-search" /></svg>
+        <input id="settingsSearch" placeholder="Поиск по настройкам" aria-label="Поиск по настройкам" spellcheck="false" />
+      </label>
+      <button class="navItem isActive" data-pane="general" role="tab" aria-selected="true" aria-controls="pane-general" id="tab-general">Общие</button>
+      <button class="navItem" data-pane="model" role="tab" aria-selected="false" aria-controls="pane-model" id="tab-model" tabindex="-1">Модель</button>
+      <button class="navItem" data-pane="agent" role="tab" aria-selected="false" aria-controls="pane-agent" id="tab-agent" tabindex="-1">Агент</button>
+      <button class="navItem" data-pane="tools" role="tab" aria-selected="false" aria-controls="pane-tools" id="tab-tools" tabindex="-1">Инструменты</button>
+      <button class="navItem" data-pane="mcp" role="tab" aria-selected="false" aria-controls="pane-mcp" id="tab-mcp" tabindex="-1">MCP</button>
+      <button class="navItem" data-pane="appearance" role="tab" aria-selected="false" aria-controls="pane-appearance" id="tab-appearance" tabindex="-1">Оформление</button>
+      <button class="navItem" data-pane="themes" role="tab" aria-selected="false" aria-controls="pane-themes" id="tab-themes" tabindex="-1">Темы</button>
+      <button class="navItem" data-pane="skills" role="tab" aria-selected="false" aria-controls="pane-skills" id="tab-skills" tabindex="-1">Скиллы</button>
+      <button class="navItem" data-pane="about" role="tab" aria-selected="false" aria-controls="pane-about" id="tab-about" tabindex="-1">О программе</button>
     </nav>
 
     <div id="settingsPanes">
-      <section class="settingsPane isActive" data-pane="general">
+      <section class="settingsPane isActive" data-pane="general" role="tabpanel" id="pane-general" aria-labelledby="tab-general" tabindex="0">
         <h2>Общие</h2>
         <label class="switchRow">
           <input type="checkbox" id="continueLast" />
@@ -54,7 +60,7 @@
         </label>
         <label class="switchRow">
           <input type="checkbox" id="showUsage" />
-          <span class="switchText">Показывать токены и стоимость<small>Строка под ответом и процент контекста в тулбаре.</small></span>
+          <span class="switchText">Показывать заполнение контекста<small>Процент заполнения в тулбаре; подробная статистика — в разделе «Аналитика».</small></span>
         </label>
         <label class="switchRow">
           <input type="checkbox" id="osNotifications" />
@@ -62,7 +68,7 @@
         </label>
       </section>
 
-      <section class="settingsPane" data-pane="model">
+      <section class="settingsPane" data-pane="model" role="tabpanel" id="pane-model" aria-labelledby="tab-model" tabindex="0">
         <h2>Модель</h2>
         <div class="field">
           <label for="apiKey">Ключ OpenRouter</label>
@@ -83,20 +89,32 @@
         </div>
       </section>
 
-      <section class="settingsPane" data-pane="agent">
+      <section class="settingsPane" data-pane="agent" role="tabpanel" id="pane-agent" aria-labelledby="tab-agent" tabindex="0">
         <h2>Агент</h2>
+        <h3 class="settingsSubhead">Рабочая папка и правила</h3>
         <div class="field">
           <label for="cwd">Рабочая папка</label>
           <div class="row">
             <input class="textInput" id="cwd" spellcheck="false" placeholder="~/.granka" />
             <button class="ghostBtn" id="pickDir">Выбрать…</button>
           </div>
-          <span class="fieldHint">Сессии группируются по папке; смена папки начинает новый контекст.</span>
+          <span class="fieldHint">Диалоги привязаны к проекту; смена рабочей папки начинает новый контекст.</span>
         </div>
         <div class="field">
           <span>Системный промпт</span>
-          <span class="fieldHint">~/.granka/SYSTEM.md управляется приложением и не редактируется из интерфейса. Свои правила — на вкладке «Проект».</span>
+          <span class="fieldHint">~/.granka/SYSTEM.md управляется приложением и не редактируется из интерфейса. Свои правила — в главном окне, раздел «Проект».</span>
         </div>
+        <h3 class="settingsSubhead">Память</h3>
+        <label class="switchRow">
+          <input type="checkbox" id="memoryEnabled" />
+          <span class="switchText">Память агента<small>Глобальная и проектная память подгружаются в каждый диалог. Агент записывает заметки сам (memory_write), вы проверяете и чистите здесь.</small></span>
+        </label>
+        <div class="field">
+          <label for="globalMemory">Память (все проекты)</label>
+          <textarea class="textInput" id="globalMemory" rows="6" spellcheck="false" placeholder="Заметки агента: предпочтения, исправления, факты. Правила — в ~/.granka/AGENTS.md"></textarea>
+          <span class="fieldHint" id="globalMemoryHint">~/.granka/MEMORY.md. Не смешивайте с правилами: протухшее удаляйте.</span>
+        </div>
+        <h3 class="settingsSubhead">Контекст и отображение</h3>
         <label class="switchRow">
           <input type="checkbox" id="compactionEnabled" />
           <span class="switchText">Автоматическое сжатие контекста<small>Когда контекст близок к пределу, старая часть диалога сворачивается в резюме.</small></span>
@@ -115,6 +133,7 @@
           <input type="checkbox" id="cacheRetentionLong" />
           <span class="switchText">Долгий кэш промпта<small>Стабильный префикс запроса кэшируется провайдером: входные токены дешевле.</small></span>
         </label>
+        <h3 class="settingsSubhead">Поведение агента</h3>
         <div class="field">
           <span>Режим работы агента</span>
           <div id="agentModeSelect"></div>
@@ -123,26 +142,32 @@
         <div class="field">
           <span>Подтверждение записи и команд</span>
           <div id="confirmBashWriteSelect"></div>
-          <span class="fieldHint">«Спрашивать» — granka спросит перед bash, записью и правкой файлов. «Всегда разрешать» — без вопросов (в диалоге подтверждения можно выбрать «всегда» только для текущей сессии).</span>
+          <span class="fieldHint">«Спрашивать» — granka спросит перед bash, записью и правкой файлов. «Всегда разрешать» — без вопросов (в диалоге подтверждения можно выбрать «всегда» только для текущего диалога).</span>
         </div>
         <label class="switchRow">
           <input type="checkbox" id="planMode" />
           <span class="switchText">Режим плана<small>Агент только читает и составляет план: инструменты записи недоступны.</small></span>
         </label>
         <div class="field">
-          <span>Пресет работы</span>
+          <span>Уровень мышления</span>
           <div id="presetSelect"></div>
-          <span class="fieldHint">Эконом — дешёвое мышление для рутины; максимум — глубокое рассуждение для сложных задач.</span>
+          <span class="fieldHint">Эконом — низкий уровень для рутины; максимум — глубокое рассуждение для сложных задач.</span>
         </div>
         <div class="field">
           <label for="dailyBudget">Дневной бюджет, $ (0 — без лимита)</label>
           <input class="textInput" id="dailyBudget" type="number" min="0" step="0.5" />
           <span class="fieldHint">granka предупредит в чате, когда сегодняшние расходы превысят бюджет.</span>
         </div>
+        <h3 class="settingsSubhead">Технические параметры</h3>
         <div class="field">
           <label for="afterEditHook">Команда после правок (edit/write)</label>
           <input class="textInput" id="afterEditHook" type="text" placeholder="npx prettier --write ." spellcheck="false" />
           <span class="fieldHint">Hook: shell-команда, запускается в папке проекта после каждой правки. Пусто — выключено.</span>
+        </div>
+        <div class="field">
+          <label for="bashAllowlist">Bash без подтверждения (префиксы команд через запятую)</label>
+          <input class="textInput" id="bashAllowlist" type="text" placeholder="git , ls, npm test" spellcheck="false" />
+          <span class="fieldHint">Команды, начинающиеся с этих префиксов, выполняются без вопроса (только в режиме подтверждения).</span>
         </div>
         <div class="field">
           <label for="toolOutputLimit">Лимит вывода инструментов, символов</label>
@@ -154,9 +179,14 @@
           <input class="textInput" id="compactionReserve" type="number" min="1000" step="1024" />
           <span class="fieldHint">Сколько токенов оставлять свободными до сжатия (по умолчанию 16384).</span>
         </div>
+        <div class="field">
+          <label for="compactionThreshold">Порог автосжатия, %</label>
+          <input class="textInput" id="compactionThreshold" type="number" min="50" max="95" step="1" />
+          <span class="fieldHint">После ответа контекст сжимается сам, если заполнен больше указанного процента (50–95, по умолчанию 80).</span>
+        </div>
       </section>
 
-      <section class="settingsPane" data-pane="tools">
+      <section class="settingsPane" data-pane="tools" role="tabpanel" id="pane-tools" aria-labelledby="tab-tools" tabindex="0">
         <h2>Инструменты агента</h2>
         <label class="switchRow">
           <input type="checkbox" id="toolTodo" />
@@ -186,6 +216,10 @@
         <div class="field">
           <span>Доступные подагенты</span>
           <div id="subagentList" class="subagentList"></div>
+          <div class="skillsToolbar">
+            <button class="ghostBtn" id="openSubagentsDir">Папка субagents</button>
+            <span class="fieldHint">Свои — файлы ~/.granka/subagents/&lt;id&gt;.md: frontmatter name/description/tools/thinking + тело-промпт. Модель всегда родительского диалога.</span>
+          </div>
           <span class="fieldHint">Агент выбирает роль сам: explore — код, research — внешние факты, review — дефекты, plan — план, general — разбор.</span>
         </div>
         <label class="switchRow">
@@ -194,20 +228,26 @@
         </label>
       </section>
 
-      <section class="settingsPane" data-pane="mcp">
+      <section class="settingsPane" data-pane="mcp" role="tabpanel" id="pane-mcp" aria-labelledby="tab-mcp" tabindex="0">
         <h2>MCP</h2>
         <label class="switchRow">
           <input type="checkbox" id="mcpEnabled" />
           <span class="switchText">MCP-серверы включены<small>Выключено: ни один MCP-процесс не запускается и инструментов mcp_* у агента нет.</small></span>
         </label>
         <div class="field">
+          <span>Подключённые серверы</span>
+          <div id="mcpServerList" class="mcpServerList"></div>
+          <div class="row"><button class="ghostBtn" id="mcpRefresh">Обновить статус</button><span class="fieldHint" id="mcpServerHint">Серверы запускаются лениво: статус меняется после первого вызова инструмента.</span></div>
+        </div>
+        <div class="field">
           <label for="mcpServers">MCP-серверы (JSON, stdio)</label>
           <textarea class="textInput" id="mcpServers" rows="4" spellcheck="false" placeholder='{"example": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"]}}'></textarea>
-          <span class="fieldHint">Инструменты MCP-серверов появятся у агента как mcp_&lt;сервер&gt;_&lt;инструмент&gt;. Серверы запускаются локально, как обычные команды, при старте сессии.</span>
+          <span class="fieldHint">Инструменты MCP-серверов появятся у агента как mcp_&lt;сервер&gt;_&lt;инструмент&gt;. Серверы запускаются локально, как обычные команды, при старте диалога.</span>
+          <div class="row"><button class="ghostBtn" id="mcpCheck">Проверить JSON</button><span class="fieldHint" id="mcpStatus"></span></div>
         </div>
       </section>
 
-      <section class="settingsPane" data-pane="appearance">
+      <section class="settingsPane" data-pane="appearance" role="tabpanel" id="pane-appearance" aria-labelledby="tab-appearance" tabindex="0">
         <h2>Оформление</h2>
         <div class="field">
           <span>Тема</span>
@@ -230,18 +270,48 @@
           <div id="densitySelect"></div>
           <span class="fieldHint">Компактная уменьшает отступы и высоту строк — на экран влезает больше.</span>
         </div>
+        <div class="field">
+          <span>Фон окна</span>
+          <div class="row">
+            <input class="textInput" id="bgImagePath" spellcheck="false" placeholder="Путь к изображению (PNG/JPG/WebP)" readonly />
+            <button class="ghostBtn" id="bgPick">Выбрать…</button>
+            <button class="ghostBtn" id="bgClear">Убрать</button>
+          </div>
+          <div class="bgPreview" id="bgPreview" hidden><div class="bgPreviewImg"></div><span class="bgPreviewLabel">превью фона</span></div>
+          <span class="fieldHint">Изображение растягивается под размер окна (режется по центру). Хранится только путь — сам файл не копируется.</span>
+        </div>
+        <div class="field">
+          <span>Заполнение фона</span>
+          <div id="bgFitSelect"></div>
+        </div>
+        <div class="field">
+          <label for="bgBlur">Блюр, px</label>
+          <div class="row"><input type="range" id="bgBlur" min="0" max="24" step="1" /><span class="fieldHint" id="bgBlurVal">0</span></div>
+        </div>
+        <div class="field">
+          <label for="bgDim">Затемнение, %</label>
+          <div class="row"><input type="range" id="bgDim" min="0" max="90" step="1" /><span class="fieldHint" id="bgDimVal">35</span></div>
+        </div>
+        <div class="field">
+          <label for="bgNoise">Шум (зерно), %</label>
+          <div class="row"><input type="range" id="bgNoise" min="0" max="60" step="1" /><span class="fieldHint" id="bgNoiseVal">0</span></div>
+        </div>
+        <div class="field">
+          <label for="bgOpacity">Непрозрачность картинки, %</label>
+          <div class="row"><input type="range" id="bgOpacity" min="10" max="100" step="1" /><span class="fieldHint" id="bgOpacityVal">100</span></div>
+        </div>
         <label class="switchRow">
           <input type="checkbox" id="accentSystem" />
           <span class="switchText">Акцентный цвет из системы<small>Выключено: каждая тема использует свой акцент.</small></span>
         </label>
       </section>
 
-      <section class="settingsPane" data-pane="themes">
+      <section class="settingsPane" data-pane="themes" role="tabpanel" id="pane-themes" aria-labelledby="tab-themes" tabindex="0">
         <h2>Темы</h2>
         <div id="themeCards"></div>
       </section>
 
-      <section class="settingsPane" data-pane="skills">
+      <section class="settingsPane" data-pane="skills" role="tabpanel" id="pane-skills" aria-labelledby="tab-skills" tabindex="0">
         <h2>Скиллы</h2>
         <div class="skillsToolbar">
           <button class="ghostBtn" id="installSkills">Установить встроенные</button>
@@ -255,14 +325,30 @@
           <button class="ghostBtn" id="importBackup">Импорт бэкапа</button>
           <span class="fieldHint" id="backupMeta"></span>
         </div>
-        <span class="fieldHint">Бэкап — zip с ~/.granka (сессии, настройки, скиллы). auth.json не входит.</span>
+        <span class="fieldHint">Бэкап — zip с ~/.granka (диалоги, настройки, скиллы). auth.json не входит.</span>
       </section>
 
+      <section class="settingsPane" data-pane="about">
+        <h2>О программе</h2>
+        <div class="field">
+          <span>granka</span>
+          <span class="fieldHint" id="aboutVersion">Локальное приложение: диалоги, проекты, документы и аналитика.</span>
+          <span class="fieldHint" id="aboutVersionNum"></span>
+        </div>
+        <div class="field">
+          <span>Данные</span>
+          <span class="fieldHint">Все данные хранятся локально в ~/.granka. Ключ OpenRouter не покидает компьютер, кроме запросов к API.</span>
+        </div>
+        <div class="row">
+          <button class="ghostBtn" id="aboutLog">Открыть папку логов</button>
+          <button class="ghostBtn" id="aboutBackup">Экспорт бэкапа</button>
+        </div>
+      </section>
     </div>
   </div>
 
   <footer id="settingsFooter">
-    <button class="ghostBtn" id="save">Сохранить</button>
+    <span class="fieldHint" id="saveNote">Настройки сохраняются автоматически.</span>
     <span class="settingsStatus" id="status" role="status"></span>
   </footer>
 

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { syncSystemPrompt } from "./prompt-template.mjs";
-import { createGrankaTools } from "./tools.mjs";
+import { createGrankaTools, drainBackgroundResults, listBackgroundTasks as listTasksImpl, cancelBackgroundTask as cancelTaskImpl } from "./tools.mjs";
 import { createDocTools, assertNotSensitive } from "./docs.mjs";
 import { writeFileAtomic } from "./atomic-write.mjs";
 import { MODEL_LEVELS, acceptsText, textOf, usageOf } from "./agent-utils.mjs";
@@ -17,19 +17,19 @@ export const AGENT_DIR = path.join(os.homedir(), ".granka");
 export const SESSION_DIR = path.join(AGENT_DIR, "sessions");
 const CONFIG_FILE = path.join(AGENT_DIR, "granka.json");
 const SYSTEM_RULES_FILE = path.join(AGENT_DIR, "SYSTEM.md"); // replaces pi's system prompt
-const AGENT_RULES_FILE = path.join(AGENT_DIR, "AGENTS.md"); // extra instructions
 export const PROMPTS_DIR = path.join(AGENT_DIR, "prompts"); // files become /slash commands
 export const SKILLS_DIR = path.join(AGENT_DIR, "skills");
 const DEFAULT_CONFIG = {
   apiKey: "",
   model: "anthropic/claude-sonnet-4.5",
   thinkingLevel: "medium",
-  theme: "dark",
+  theme: "auto",
   cwd: "",
   favorites: [],
   projects: [], // [{ id, name, cwd, instructions }]
   activeProject: "",
   // preferences surfaced in the settings window
+  settingsPane: "general",
   fontSize: "m",
   accentSystem: false,
   showUsage: true,
@@ -46,21 +46,30 @@ const DEFAULT_CONFIG = {
   planMode: false,
   agentMode: "chat", // chat | plan | auto | debug (Claude Code style permission modes)
   confirmBashWrite: "ask", // ask = confirm bash/write/edit/doc writes; allow = always allow
+  bashAllowlist: [], // bash commands (by prefix) allowed without confirmation
   toolDisplay: "live",
   hooks: {}, // { toolName: "shell command after the tool finishes" }
   dailyBudgetUsd: 0, // 0 = off; warn in chat when today's spend passes this
-  mcpServers: {}, // { name: { command, args, env } } — stdio MCP servers
+  mcpServers: {}, // { name: { command, args, env, disabled? } } — stdio MCP servers
   mcpEnabled: true, // master switch: off = no MCP process ever starts
   searxUrl: "",
   debugTools: false,
   toolDocs: true,
   compactionEnabled: true,
   compactionReserve: 16384,
+  compactionThreshold: 80, // percent of the context window that triggers idle compaction
   attachMaxMb: 25,
+  backgroundImage: "",
+  backgroundBlur: 0,
+  backgroundDim: 35,
+  backgroundNoise: 0,
+  backgroundOpacity: 100,
+  backgroundFit: "cover",
   uiFont: "theme",
   codeFont: "theme",
   cacheRetentionLong: true,
-  toolOutputLimit: 4000,
+  memoryEnabled: true, // load global + project memory into each session
+  toolOutputLimit: 16000,
   pinnedSessions: [],
   sessionSort: "recent",
   density: "comfortable",
@@ -91,7 +100,6 @@ export async function init() {
   fs.mkdirSync(SESSION_DIR, { recursive: true });
   syncSystemPrompt(AGENT_DIR);
   installBundledSkills();
-  migrateMemoryIntoRules();
   // Must happen before the SDK is imported: pi resolves its config dir on load.
   process.env.PI_CODING_AGENT_DIR = AGENT_DIR;
   process.env.PI_SKIP_VERSION_CHECK = "1";
@@ -102,20 +110,9 @@ export async function init() {
 
 const CONFIG_VERSION = 6;
 
-// MEMORY.md duplicated AGENTS.md: same file appended to the same prompt.
-// Content is merged once and the old file is kept as a backup.
-function migrateMemoryIntoRules() {
-  const memory = readIfExists(MEMORY_FILE).trim();
-  if (!memory) return;
-  try {
-    const current = readIfExists(AGENT_RULES_FILE).trim();
-    if (!current.includes(memory.slice(0, 80))) {
-      const merged = `${current}${current ? "\n\n" : ""}## Память\n${memory}\n`;
-      fs.writeFileSync(AGENT_RULES_FILE, merged);
-    }
-    fs.renameSync(MEMORY_FILE, `${MEMORY_FILE}.bak`);
-  } catch (err) { console.error("[granka]", err?.message ?? err); }
-}
+// MEMORY.md is user notes (volatile), AGENTS.md is rules (stable). They must
+// not be merged: merged memory rots inside rules forever. Memory is appended
+// per session in createSession instead; nothing to migrate here.
 
 function readProjectMap() {
   try {
@@ -220,14 +217,47 @@ function saveConfig(cfg) {
   writeFileAtomic(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
 }
 
+// The Pi catalog is a static snapshot frozen at the Pi release; without a
+// network refresh it never learns new models or fresh prices. allowModel-
+// Network lets the runtime pull the pi.dev catalog and personalize it via
+// OpenRouter /models/user (key-scoped models, limits, prices), cached in
+// models-store.json with the built-in catalog as the offline fallback.
+const CATALOG_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+let lastCatalogRefresh = 0;
+
 async function getRuntime() {
   if (!runtime) {
     runtime = await pi.ModelRuntime.create({
       authPath: path.join(AGENT_DIR, "auth.json"),
       modelsPath: path.join(AGENT_DIR, "models.json"),
+      allowModelNetwork: true,
+      modelRefreshTimeoutMs: 8000,
     });
+    lastCatalogRefresh = Date.now();
+    // The key lives in granka.json until syncKey runs at session start, but
+    // the catalog refresh resolves no credential — and makes no network
+    // request at all — without one. Sync it now so the personalized
+    // catalog (pi.dev + /models/user) can actually refresh on startup.
+    // A bad key must not break runtime creation: log and keep the cached
+    // catalog; session start will surface the sync error properly.
+    try { await syncKey(runtime, loadConfig()); } catch (err) { console.error("[granka]", err?.message ?? err); }
+    try { await runtime.refresh({ signal: AbortSignal.timeout(8000) }); } catch (err) { console.error("[granka] catalog refresh failed:", err?.message ?? err); }
+    lastCatalogRefresh = Date.now();
   }
   return runtime;
+}
+
+// Pi refreshes the personalized OpenRouter catalog on every rt.refresh(),
+// so throttle it here: at most once an hour, except after a key change
+// (personalization is key-scoped). Fire-and-forget: the caller reads the
+// current snapshot; the fresh catalog lands on the next listModels call.
+function refreshCatalog(rt, force = false) {
+  const now = Date.now();
+  if (!force && now - lastCatalogRefresh < CATALOG_REFRESH_INTERVAL_MS) return;
+  lastCatalogRefresh = now;
+  void rt
+    .refresh()
+    .catch((err) => console.error("[granka] catalog refresh failed:", err?.message ?? err));
 }
 
 // The runtime key is a non-persistent overlay: granka.json is the source of
@@ -263,6 +293,7 @@ async function syncKey(rt, cfg) {
 // marks a level as unsupported with null, non-reasoning models only have "off".
 export async function listModels() {
   const rt = await getRuntime();
+  refreshCatalog(rt);
   return rt
     .getAllModels("openrouter")
     .filter(acceptsText)
@@ -299,10 +330,11 @@ const CONFIG_WHITELIST = new Set([
   "apiKey", "model", "thinkingLevel", "theme", "cwd", "favorites", "activeProject",
   "fontSize", "accentSystem", "showUsage", "sendOnEnter", "autoScroll", "osNotifications",
   "continueLast", "toolTodo", "toolAsk", "toolWeb", "toolSubagents", "toolGit", "toolDocs",
-  "planMode", "agentMode", "confirmBashWrite", "toolDisplay", "thinkingDisplay", "hooks", "dailyBudgetUsd",
+  "planMode", "agentMode", "confirmBashWrite", "bashAllowlist", "toolDisplay", "thinkingDisplay", "hooks", "dailyBudgetUsd",
   "mcpServers", "mcpEnabled", "searxUrl", "debugTools", "compactionEnabled",
-  "compactionReserve", "attachMaxMb", "uiFont", "codeFont", "cacheRetentionLong",
-  "toolOutputLimit", "pinnedSessions", "sessionSort", "density", "onboarded", "autoTitle",
+  "compactionReserve", "compactionThreshold", "attachMaxMb", "uiFont", "codeFont", "cacheRetentionLong",
+  "toolOutputLimit", "pinnedSessions", "sessionSort", "density", "onboarded", "autoTitle", "memoryEnabled", "settingsPane",
+  "backgroundImage", "backgroundBlur", "backgroundDim", "backgroundNoise", "backgroundOpacity", "backgroundFit",
 ]);
 
 function sanitizeConfigPatch(patch) {
@@ -322,6 +354,7 @@ function sanitizeConfigPatch(patch) {
       if (!s || typeof s !== "object" || typeof s.command !== "string" || !s.command) return null;
       if (s.args !== undefined && !Array.isArray(s.args)) return null;
       if (s.env !== undefined && (typeof s.env !== "object" || Array.isArray(s.env))) return null;
+      if (s.disabled !== undefined && typeof s.disabled !== "boolean") return null;
     }
   }
   return clean;
@@ -350,6 +383,9 @@ async function applyConfigNow(patch) {
       return { ok: false, error: "ключ не записался на диск" };
     }
     await syncKey(rt, cfg);
+    // A new key re-scopes the personalized catalog (/models/user): refresh
+    // it immediately instead of waiting for the hourly throttle.
+    if ((cfg.apiKey ?? "") !== (before.apiKey ?? "")) refreshCatalog(rt, true);
     // A new key does not help a session that was created with the old
     // credential cached: drop it so the next prompt rebuilds it with the
     // fresh runtime key. Same for a working-folder change.
@@ -360,7 +396,9 @@ async function applyConfigNow(patch) {
       (cfg.agentMode ?? "chat") !== (before.agentMode ?? "chat")
     ) {
       await dropSession();
-      pending = { kind: "recent" };
+      // A session file created under another mode keeps that mode's tool set
+      // when reopened, so a mode change must start a fresh session.
+      pending = { kind: "new" };
     }
     if (session) {
       if (cfg.model && cfg.model !== before.model) {
@@ -445,6 +483,66 @@ export async function saveProjectRules(id, text) {
   } catch (err) {
     return { ok: false, error: String(err?.message ?? err) };
   }
+}
+
+// --- memory (volatile user notes, separate from AGENTS.md rules) ----------
+// Global memory: ~/.granka/MEMORY.md. Project memory: ~/.granka/memory/<id>.md
+// (outside the repo: never committed by accident, survives folder moves).
+// Loaded per session capped like Claude Code auto memory: 200 lines / 25 KB.
+const MEMORY_DIR = path.join(AGENT_DIR, "memory");
+const MEMORY_MAX_LINES = 200;
+const MEMORY_MAX_CHARS = 25 * 1024;
+
+export function readMemoryCapped(file) {
+  const text = readIfExists(file).trim();
+  if (!text) return "";
+  const lines = text.split("\n").slice(0, MEMORY_MAX_LINES).join("\n");
+  return lines.length > MEMORY_MAX_CHARS ? lines.slice(0, MEMORY_MAX_CHARS) : lines;
+}
+
+function projectMemoryPath(id) {
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(id ?? ""))) return "";
+  return path.join(MEMORY_DIR, `${id}.md`);
+}
+
+export function getMemory() {
+  return { ok: true, path: MEMORY_FILE, text: readIfExists(MEMORY_FILE) };
+}
+
+export function saveMemory(text) {
+  try {
+    fs.mkdirSync(AGENT_DIR, { recursive: true });
+    fs.writeFileSync(MEMORY_FILE, String(text ?? ""));
+    return { ok: true, path: MEMORY_FILE };
+  } catch (err) {
+    return { ok: false, error: String(err?.message ?? err) };
+  }
+}
+
+export function getProjectMemory(id) {
+  const file = projectMemoryPath(id);
+  if (!file) return { ok: false, error: "некорректный id проекта" };
+  return { ok: true, path: file, text: readIfExists(file) };
+}
+
+export function saveProjectMemory(id, text) {
+  const file = projectMemoryPath(id);
+  if (!file) return { ok: false, error: "некорректный id проекта" };
+  try {
+    fs.mkdirSync(MEMORY_DIR, { recursive: true });
+    fs.writeFileSync(file, String(text ?? ""));
+    return { ok: true, path: file };
+  } catch (err) {
+    return { ok: false, error: String(err?.message ?? err) };
+  }
+}
+
+export function listBackgroundTasks() {
+  return listTasksImpl();
+}
+
+export function cancelBackgroundTask(id) {
+  return cancelTaskImpl(id);
 }
 
 export function listProjects() {
@@ -724,7 +822,7 @@ export async function listSessions(query = "", options = {}) {
 }
 
 function cappedSessionChars(info) {
-  const cap = Math.min(Math.max(Number(loadConfig().toolOutputLimit) || 4000, 500), 20000);
+  const cap = Math.min(Math.max(Number(loadConfig().toolOutputLimit) || 16000, 500), 32000);
   try {
     return readSessionMessages(info.path).reduce(
       (sum, message) => sum + Math.min(String(message.text ?? "").length, cap),
@@ -912,7 +1010,8 @@ async function ensureSessionNow() {
   pending = { kind: "recent" };
 
   // toolExecution parallel: independent calls in one block run together;
-  // same-file edits serialize through the per-file lock (see installFileLocks).
+  // same-file writes serialize (SDK queue for edit/write, per-file lock for
+  // doc tools — see installFileLocks).
   const options = { cwd, modelRuntime: rt, sessionManager: manager, toolExecution: "parallel" };
   const project = activeProject(cfg);
   const append = [];
@@ -920,24 +1019,41 @@ async function ensureSessionNow() {
   // Write-capable tools are excluded at the session level, not just via prompt.
   const effectivePlan = cfg.planMode || cfg.agentMode === "plan";
   if (effectivePlan) {
-    options.excludedToolNames = ["write", "edit", "bash", "doc_create", "doc_edit", "doc_format"];
+    options.excludedToolNames = ["write", "edit", "edit_fuzzy", "bash", "doc_create", "doc_edit", "doc_format"];
     append.push(
-      "## Режим плана\n" +
-        "Ты в режиме плана: только чтение и исследование. Не вноси правок и не запускай команды, меняющие файлы. " +
-        "Составь план (шаги, файлы, риски, проверка) и остановись — жди подтверждения пользователя.",
+      "## Plan mode\n" +
+        "You are in plan mode: read and investigate only. No edits, no state-changing commands. " +
+        "Produce a plan (steps, files, risks, verification) and stop — wait for the user's confirmation.",
     );
   }
-  const projectRules = project ? readProjectAgents(project).text.trim() : "";
-  if (projectRules) append.push(`## Правила проекта (${projectAgentsPath(project) || "granka.json"})\n${projectRules}`);
-  if (append.length) {
-    const loader = new pi.DefaultResourceLoader({
-      cwd,
-      agentDir: AGENT_DIR,
-      appendSystemPrompt: append,
-    });
-    await loader.reload();
-    options.resourceLoader = loader;
+  // Project AGENTS.md is loaded by the SDK as a context file (global, then every
+  // ancestor up to cwd). Appending it again here would pay for it twice and
+  // distort the precedence the system prompt declares. Only the granka.json
+  // fallback (projects without a folder) needs the manual append.
+  const projectRules = project ? readProjectAgents(project) : null;
+  if (projectRules && !projectRules.exists && projectRules.text.trim()) {
+    append.push(`## Project instructions (granka.json)\n${projectRules.text.trim()}`);
   }
+  // Memory is volatile user notes (agent- or user-written), never merged into
+  // AGENTS.md rules. Rules win over memory; memory is capped per file.
+  if (cfg.memoryEnabled !== false) {
+    const memory = readMemoryCapped(MEMORY_FILE);
+    if (memory) append.push(`## User memory (notes, may be outdated; AGENTS.md rules win)\n${memory}`);
+    const projectMemoryFile = project ? projectMemoryPath(project.id) : "";
+    const projectMemory = projectMemoryFile ? readMemoryCapped(projectMemoryFile) : "";
+    if (projectMemory) append.push(`## Project memory (notes, may be outdated; AGENTS.md rules win)\n${projectMemory}`);
+  }
+  // Always pass the loader explicitly: an explicit systemPrompt path blocks a
+  // project-local .pi/SYSTEM.md from replacing the app's prompt, and a
+  // provided (even empty) append list blocks a project APPEND_SYSTEM.md.
+  const loader = new pi.DefaultResourceLoader({
+    cwd,
+    agentDir: AGENT_DIR,
+    systemPrompt: SYSTEM_RULES_FILE,
+    appendSystemPrompt: append,
+  });
+  await loader.reload();
+  options.resourceLoader = loader;
   const model = cfg.model && rt.getModel("openrouter", cfg.model);
   if (model) {
     options.model = model;
@@ -965,8 +1081,10 @@ async function ensureSessionNow() {
   if (cfg.toolTodo !== false) enabled.push(tools.todoTool);
   if (cfg.toolAsk !== false && cfg.agentMode !== "auto") enabled.push(tools.askTool);
   if (cfg.toolWeb !== false) enabled.push(tools.webSearchTool, tools.webFetchTool);
-  if (cfg.toolSubagents !== false) enabled.push(tools.subagentTool);
-  if (cfg.toolGit !== false) enabled.push(tools.statusTool, tools.diffTool, tools.repoMapTool);
+  if (cfg.toolSubagents !== false) enabled.push(withTimeout(tools.subagentTool));
+  if (cfg.toolGit !== false) enabled.push(tools.statusTool, tools.diffTool, withTimeout(tools.repoMapTool));
+  if (cfg.memoryEnabled !== false) enabled.push(tools.memoryTool);
+  enabled.push(tools.fuzzyEditTool);
   if (cfg.mcpEnabled !== false && cfg.mcpServers && Object.keys(cfg.mcpServers).length) {
     // Lazy MCP: proxies come from the on-disk schema cache, so no server
     // spawns at session start. First use (mcp_search or a proxy call) starts
@@ -985,14 +1103,16 @@ async function ensureSessionNow() {
       emit: (notice) => uiBridge.emit(notice),
     });
     enabled.push(
-      docTools.outlineTool,
-      docTools.readTool,
-      docTools.searchTool,
-      docTools.createTool,
-      docTools.editTool,
-      docTools.formatTool,
+      withTimeout(docTools.outlineTool),
+      withTimeout(docTools.readTool),
+      withTimeout(docTools.searchTool),
+      withTimeout(docTools.createTool),
+      withTimeout(docTools.editTool),
+      withTimeout(docTools.formatTool),
+      withTimeout(docTools.batchTool),
     );
   }
+  enabled.push(...sdkToolsWithTimeout(cwd));
   if (enabled.length) options.customTools = enabled;
 
   ({ session } = await pi.createAgentSession(options));
@@ -1003,10 +1123,75 @@ async function ensureSessionNow() {
   return session;
 }
 
-// Pi runs the tool calls of one turn in parallel. Two edits to the SAME file
-// would race, so file-writing tools take a per-file lock here: different
-// files run concurrently, the same file serializes (the second edit waits).
-const EDIT_TOOLS = new Set(["edit", "write", "doc_edit", "doc_create"]);
+// Per-tool timeouts: an unbounded tool hangs the whole turn until the
+// harness kills it minutes later, unexplained. SDK built-ins have no
+// timeout API, so granka registers same-named wrapped copies (custom tools
+// override built-ins by name in the SDK registry) — same definitions, same
+// file-mutation queues, plus a deadline.
+const TOOL_TIMEOUTS = {
+  read: 60000,
+  write: 60000,
+  edit: 60000,
+  grep: 60000,
+  find: 60000,
+  ls: 30000,
+  bash: 180000, // backstop; the hook sets a 120s command timeout
+  powershell: 180000,
+  doc_outline: 60000,
+  doc_read: 60000,
+  doc_search: 60000,
+  doc_create: 120000,
+  doc_edit: 120000,
+  doc_format: 120000,
+  doc_batch: 180000,
+  repo_map: 30000,
+  task: 600000, // a subagent doing real work legitimately runs for minutes
+};
+
+function withTimeout(tool) {
+  const ms = TOOL_TIMEOUTS[tool.name];
+  if (!ms || typeof tool.execute !== "function") return tool;
+  const execute = tool.execute;
+  return {
+    ...tool,
+    execute: async (...args) => {
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${tool.name}: превышен таймаут ${Math.round(ms / 1000)} с`)),
+          ms,
+        );
+      });
+      try {
+        return await Promise.race([execute(...args), timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+function sdkToolsWithTimeout(cwd) {
+  const defs = [
+    pi.createReadToolDefinition(cwd),
+    pi.createWriteToolDefinition(cwd),
+    pi.createEditToolDefinition(cwd),
+    pi.createGrepToolDefinition(cwd),
+    pi.createFindToolDefinition(cwd),
+    pi.createLsToolDefinition(cwd),
+    pi.createBashToolDefinition(cwd),
+  ];
+  if (process.platform === "win32") defs.push(pi.createPowerShellToolDefinition(cwd));
+  return defs.map(withTimeout);
+}
+
+// Pi runs the tool calls of one turn in parallel. Two writes to the SAME
+// file would race, so they serialize. The SDK's edit/write tools already
+// queue per file (withFileMutationQueue) — locking them here too would stack
+// two queues and double the failure modes. Granka's own doc tools have no
+// such queue, so the per-file lock below covers only them. (A doc_edit and
+// an edit racing on the same path in one turn is the accepted residual risk.)
+const EDIT_TOOLS = new Set(["doc_edit", "doc_create", "edit_fuzzy"]);
 
 function editTargetPath(toolName, args) {
   if (!EDIT_TOOLS.has(toolName) || !args || typeof args !== "object") return "";
@@ -1018,33 +1203,77 @@ function sessionCwd() {
   try { return session?.sessionManager.getCwd() ?? AGENT_DIR; } catch { return AGENT_DIR; }
 }
 
+// Release-all registry: ask()'s finally and abort() reset a session's locks
+// so an interrupted turn never leaves a file locked for the next one.
+const releaseAllLocksBySession = new WeakMap();
+export function resetFileLocks(sess) {
+  releaseAllLocksBySession.get(sess)?.();
+}
+
+// Does a bash command touch paths outside the project folder? Heuristic:
+// `..` segments and absolute paths outside cwd (system dirs excluded).
+function bashEscapesCwd(command, cwd) {
+  const cmd = String(command ?? "");
+  if (/(^|[\s'"`;&|(])\.\.(\/|\\|[\s'"`;&|)]|$)/.test(cmd)) return true;
+  const abs = cmd.match(/\/[A-Za-z0-9._\-\/]+/g) ?? [];
+  const sys = ["/usr/", "/bin/", "/sbin/", "/opt/", "/lib/", "/dev/", "/tmp/"];
+  return abs.some((p) => !p.startsWith(cwd) && !sys.some((prefix) => p.startsWith(prefix)));
+}
+
+const LOCK_WAIT_MS = 30000; // absolute cap: never hang a tool call longer
+const LOCK_STALE_MS = 20000; // a file write takes milliseconds; older = leaked
+
 function installFileLocks(sess) {
-  const locks = new Map(); // file -> Set<toolCallId>
-  const waiters = new Map(); // file -> Set<resolve>
+  const locks = new Map(); // file -> Map<toolCallId, acquiredAt>
+  const waiters = new Map(); // file -> Set<wake>
+  const wake = (file) => {
+    const pending = waiters.get(file);
+    if (!pending?.size) return;
+    waiters.delete(file);
+    for (const resolve of pending) resolve();
+  };
   const release = (file, id) => {
     const owners = locks.get(file);
     if (!owners) return;
     owners.delete(id);
     if (!owners.size) {
       locks.delete(file);
-      const pending = waiters.get(file);
-      if (pending?.size) {
-        waiters.delete(file);
-        for (const resolve of pending) resolve();
-      }
+      wake(file);
     }
   };
+  const releaseAll = () => {
+    locks.clear();
+    for (const file of [...waiters.keys()]) wake(file);
+  };
+  releaseAllLocksBySession.set(sess, releaseAll);
   // Chain the SDK's own hooks (extensions) instead of replacing them.
   const previousBefore = sess.agent.beforeToolCall;
   const previousAfter = sess.agent.afterToolCall;
-  const CONFIRM_TOOLS = new Set(["bash", "write", "edit", "doc_create", "doc_edit", "doc_format"]);
+  const CONFIRM_TOOLS = new Set(["bash", "write", "edit", "edit_fuzzy", "doc_create", "doc_edit", "doc_format"]);
   sess.agent.beforeToolCall = async (context, signal) => {
     const toolName = context.toolCall?.name ?? "";
+    // bash has no default timeout in the SDK: one hanging command would hang
+    // the whole tool call. 120s default; the model can override per call.
+    if (
+      toolName === "bash" &&
+      context.args && typeof context.args === "object" &&
+      context.args.timeout == null
+    ) {
+      context.args.timeout = 120;
+    }
     const cfg = loadConfig();
+    // Allowlisted bash prefixes never ask (user-configured, settings).
+    const bashAllowed =
+      toolName === "bash" &&
+      Array.isArray(cfg.bashAllowlist) &&
+      cfg.bashAllowlist.some(
+        (prefix) => prefix && String(context.args?.command ?? "").trim().startsWith(prefix),
+      );
     // auto mode means "no questions": treat it as always-allow alongside
     // the persisted setting and per-session confirmations.
     if (
       CONFIRM_TOOLS.has(toolName) &&
+      !bashAllowed &&
       cfg.confirmBashWrite !== "allow" &&
       cfg.agentMode !== "auto" &&
       !cfg.planMode &&
@@ -1056,8 +1285,10 @@ function installFileLocks(sess) {
         toolName === "bash"
           ? String(args.command ?? "").slice(0, 300)
           : String(args.path ?? args.file_path ?? "").slice(0, 300);
+      const escapes =
+        toolName === "bash" && bashEscapesCwd(args.command ?? "", sessionCwd());
       const answer = await uiBridge.askUser({
-        question: `Агент хочет выполнить: ${toolName}${detail ? ` — ${detail}` : ""}. Разрешить?`,
+        question: `Агент хочет выполнить: ${toolName}${detail ? ` — ${detail}` : ""}.${escapes ? " Внимание: команда затрагивает пути вне папки проекта." : ""} Разрешить?`,
         header: "Подтверждение",
         allowFreeform: false,
         options: [
@@ -1076,14 +1307,42 @@ function installFileLocks(sess) {
       const id = context.toolCall?.id ?? file;
       while (locks.has(file)) {
         if (signal?.aborted) throw new Error("aborted");
-        await new Promise((resolve) => {
+        // Evict owners that never release: a file write takes milliseconds,
+        // so a lock older than LOCK_STALE_MS is a call that died holding it.
+        const owners = locks.get(file);
+        const now = Date.now();
+        for (const [ownerId, at] of owners) {
+          if (now - at > LOCK_STALE_MS) {
+            console.error(`[granka] stale file lock evicted: ${file} (${ownerId})`);
+            owners.delete(ownerId);
+          }
+        }
+        if (!owners.size) {
+          locks.delete(file);
+          wake(file);
+          break;
+        }
+        // Bounded wait as a final guard: never burn the whole tool call
+        // waiting for a lock that will not come.
+        await new Promise((resolve, reject) => {
+          const cleanup = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            waiters.get(file)?.delete(onWake);
+          };
+          const onWake = () => { cleanup(); resolve(); };
+          const onAbort = () => { cleanup(); resolve(); };
+          const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`Блокировка файла не снялась за ${LOCK_WAIT_MS / 1000} с: ${file}. Предыдущая правка, возможно, не завершилась.`));
+          }, LOCK_WAIT_MS);
           if (!waiters.has(file)) waiters.set(file, new Set());
-          waiters.get(file).add(resolve);
-          signal?.addEventListener("abort", resolve, { once: true });
+          waiters.get(file).add(onWake);
+          signal?.addEventListener("abort", onAbort, { once: true });
         });
       }
-      if (!locks.has(file)) locks.set(file, new Set());
-      locks.get(file).add(id);
+      if (!locks.has(file)) locks.set(file, new Map());
+      locks.get(file).set(id, Date.now());
     }
     return previousBefore ? previousBefore(context, signal) : undefined;
   };
@@ -1112,6 +1371,20 @@ function sumTurnUsage(messages) {
     total.billed = total.billed && usage.billed; // one estimated step taints the sum
   }
   return seen ? total : null;
+}
+
+// Full text of one agent turn: every assistant message between tool calls
+// contributes. getLastAssistantText() returns only the final message, so a
+// turn of text -> tool -> text -> tool -> text would lose everything but the
+// tail (the renderer then overwrites the streamed full text with that tail).
+export function turnText(messages) {
+  const parts = [];
+  for (const message of messages ?? []) {
+    if (message?.role !== "assistant") continue;
+    const text = textOf(message).trim();
+    if (text) parts.push(text);
+  }
+  return parts.join("\n\n");
 }
 
 function contextOf(s) {
@@ -1239,6 +1512,47 @@ export async function history() {
 
 let compacting = false;
 
+// Fire-and-forget compaction between turns. The next ask() cancels it first.
+function compactNowBackground() {
+  compactNow()
+    .then((result) => {
+      uiBridge.emit({ kind: "compaction", background: true, aborted: !result.ok });
+    })
+    .catch((err) => console.error("[granka compaction]", err?.message ?? err));
+}
+
+// Live context breakdown for the meter popover: prompt + rules + memory +
+// history, estimated in tokens (chars/4; history is the remainder of the real
+// context size so the parts always add up).
+export async function contextBreakdown() {
+  const s = await ensureSession();
+  const context = contextOf(s);
+  const charsOf = (file) => {
+    try { return fs.readFileSync(file, "utf8").length; } catch { return 0; }
+  };
+  const cfg = loadConfig();
+  const project = activeProject(cfg);
+  const projectRulesFile = project ? projectAgentsPath(project) : "";
+  const system = charsOf(SYSTEM_RULES_FILE);
+  const rules = charsOf(path.join(AGENT_DIR, "AGENTS.md")) + (projectRulesFile ? charsOf(projectRulesFile) : 0);
+  const memory =
+    readMemoryCapped(MEMORY_FILE).length +
+    (project ? readMemoryCapped(projectMemoryPath(project.id)).length : 0);
+  const fixed = Math.round((system + rules + memory) / 4);
+  const total = context?.tokens ?? fixed;
+  const history = Math.max(0, total - fixed);
+  return {
+    ok: true,
+    context,
+    parts: [
+      { id: "system", label: "Системный промпт", tokens: Math.round(system / 4) },
+      { id: "rules", label: "Правила AGENTS.md", tokens: Math.round(rules / 4) },
+      { id: "memory", label: "Память", tokens: Math.round(memory / 4) },
+      { id: "history", label: "История диалога", tokens: history },
+    ],
+  };
+}
+
 export async function compactNow() {
   try {
     const s = await ensureSession();
@@ -1267,14 +1581,18 @@ export async function isCompacting() {
 // assistant turn, `followUp` after all pending work.
 export async function queueMessage(text, mode = "followUp") {
   const s = await ensureSession();
-  const state = mode === "steer" ? s.steer(text) : s.followUp(text);
-  return { ok: true, state };
+  try {
+    await (mode === "steer" ? s.steer(text) : s.followUp(text));
+  } catch (err) {
+    return { ok: false, error: String(err?.message ?? err) };
+  }
+  return { ok: true };
 }
 
 const ATTACH_DIR = path.join(AGENT_DIR, "attachments");
 const STATS_FILE = path.join(AGENT_DIR, "stats.jsonl");
 const PI_SETTINGS_FILE = path.join(AGENT_DIR, "settings.json");
-const MEMORY_FILE = path.join(AGENT_DIR, "MEMORY.md"); // legacy, merged into AGENTS.md
+const MEMORY_FILE = path.join(AGENT_DIR, "MEMORY.md"); // user notes, appended per session, never merged into AGENTS.md
 // Strict chat ↔ project binding: a session belongs to exactly one project,
 // independent of its folder (two projects may share a folder).
 const PROJECTS_MAP_FILE = path.join(AGENT_DIR, "session-projects.json");
@@ -1282,7 +1600,7 @@ const PROJECTS_MAP_FILE = path.join(AGENT_DIR, "session-projects.json");
 function clip(value) {
   // Every tool result is clipped: unbounded tool output is the cheapest way to
   // burn input tokens, and the model rarely needs the tail.
-  const limit = Math.min(Math.max(Number(loadConfig().toolOutputLimit) || 4000, 500), 20000);
+  const limit = Math.min(Math.max(Number(loadConfig().toolOutputLimit) || 16000, 500), 32000);
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "";
   return text.length > limit ? `${text.slice(0, limit)}\n… обрезано` : text;
 }
@@ -1378,6 +1696,9 @@ function computeStats() {
   const byModel = new Map();
   const byDay = new Map();
   const bySession = new Map();
+  const byProject = new Map();
+  const projectMap = readProjectMap();
+  const projectNames = new Map((loadConfig().projects ?? []).map((p) => [p.id, p.name]));
   for (const row of rows) {
     const inputTotal = (row.input ?? 0) + (row.cacheRead ?? 0) + (row.cacheWrite ?? 0);
     totals.calls += 1;
@@ -1405,6 +1726,14 @@ function computeStats() {
     sessionRow.calls += 1;
     sessionRow.cost += row.cost ?? 0;
     bySession.set(row.sessionId, sessionRow);
+    // Per-project spend: session → project via session-projects.json.
+    const projectName = projectNameOf(row.sessionId, projectMap, projectNames);
+    const projRow = byProject.get(projectName) ?? { project: projectName, calls: 0, cost: 0, input: 0, output: 0 };
+    projRow.calls += 1;
+    projRow.cost += row.cost ?? 0;
+    projRow.input += inputTotal;
+    projRow.output += row.output ?? 0;
+    byProject.set(projectName, projRow);
   }
 
   return {
@@ -1412,7 +1741,14 @@ function computeStats() {
     byModel: [...byModel.values()].sort((a, b) => b.cost - a.cost),
     byDay: [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)).slice(-14),
     bySession: [...bySession.values()].sort((a, b) => b.cost - a.cost).slice(0, 20),
+    byProject: [...byProject.values()].sort((a, b) => b.cost - a.cost).slice(0, 10),
   };
+}
+
+// Session → project name: stats recompute is cached by file mtime, so the
+// extra read of session-projects.json here is cheap.
+function projectNameOf(sessionId, projectMap, projectNames) {
+  return projectNames.get(projectMap[sessionId] ?? "") ?? "Без проекта";
 }
 
 // Attachments are copied into the agent home so the session keeps working even
@@ -1567,6 +1903,20 @@ export async function attachFiles(paths = [], onProgress = () => {}) {
 // Base64 data URL for an image attachment (used by the renderer to downscale
 // it on a canvas before it goes to the model — full-size screenshots would
 // otherwise bloat every request).
+export function wallpaperDataUrl(filePath) {
+  try {
+    const full = path.resolve(String(filePath ?? ""));
+    if (!fs.existsSync(full)) return { ok: false };
+    const ext = path.extname(full).toLowerCase();
+    const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp", ".avif": "image/avif" }[ext];
+    if (!mime) return { ok: false };
+    if (fs.statSync(full).size > 15 * 1024 * 1024) return { ok: false, error: "файл больше 15 МБ" };
+    return { ok: true, dataUrl: `data:${mime};base64,${fs.readFileSync(full).toString("base64")}` };
+  } catch (err) {
+    return { ok: false, error: String(err?.message ?? err) };
+  }
+}
+
 export function attachmentDataUrl(filePath) {
   try {
     const full = path.resolve(String(filePath ?? ""));
@@ -1719,6 +2069,13 @@ async function runAfterEditHook(toolName, session) {
 }
 
 export async function ask(question, onDelta, onTool, onNotify = () => {}, attachments = [], onThinking = () => {}) {
+  if (compacting) await cancelCompaction();
+  const backgroundResults = drainBackgroundResults();
+  if (backgroundResults.length) {
+    question = `${question}\n\n[Background subagent results since your last turn]\n${backgroundResults
+      .map((r) => `- ${r.agent} (${r.description}):\n${r.text}`)
+      .join("\n\n")}`;
+  }
   const s = await ensureSession();
   const checkpointState = { done: false };
   let thinkingFirstAt = 0;
@@ -1782,22 +2139,39 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
         .map((item) => `- ${item.path} (${path.extname(item.name).slice(1) || "файл"}, ${item.bytes} B)`)
         .join("\n")}`
     : "";
+  const startIndex = s.messages.length;
   try {
     // One prompt with tool calls produces many assistant turns, each with its
     // own usage. Summing them all is the only honest per-turn total — the
     // last message alone undercounts spend by most of the turn.
-    const startIndex = s.messages.length;
     await s.prompt(question + attachmentNote, images.length ? { images } : undefined);
     const fresh = s.messages.slice(startIndex);
     const usage = sumTurnUsage(fresh);
     recordUsage(s.sessionManager.getSessionId(), s.model?.id ?? loadConfig().model, usage);
     const thinkingMs = thinkingFirstAt && thinkingLastAt ? thinkingLastAt - thinkingFirstAt : 0;
     if (thinkingMs) thinkingMsBySession.set(s.sessionManager.getSessionId(), thinkingMs);
-    return { ok: true, text: s.getLastAssistantText() ?? "", usage, context: contextOf(s), thinkingMs };
+    const context = contextOf(s);
+    // Background compaction: once the turn is over and the session is idle, a
+    // nearly full context compacts itself instead of blocking the next turn.
+    const cfg = loadConfig();
+    const threshold = Math.min(95, Math.max(50, Number(cfg.compactionThreshold) || 80));
+    if (cfg.compactionEnabled !== false && context && context.percent >= threshold && !compacting) {
+      uiBridge.emit({ kind: "compaction", background: true, started: true });
+      compactNowBackground();
+    }
+    return { ok: true, text: turnText(fresh), usage, context, thinkingMs };
   } catch (err) {
-    return { ok: false, error: String(err?.message ?? err) };
+    // Interrupted/failed turn: the partial answer is already in the session
+    // messages — hand it back so the UI finalizes it instead of dropping it.
+    let text = "";
+    try {
+      text = turnText(s.messages.slice(startIndex));
+    } catch (recoverErr) { console.error("[granka]", recoverErr?.message ?? recoverErr); }
+    return { ok: false, error: String(err?.message ?? err), text };
   } finally {
     unsubscribe();
+    // The turn is over (or aborted): never carry its locks into the next one.
+    resetFileLocks(s);
   }
 }
 
@@ -1813,6 +2187,7 @@ export async function isBusy() {
 
 export async function abort() {
   await session?.abort();
+  resetFileLocks(session);
 }
 
 // --- backup: export/import ~/.granka as a .zip -----------------------------

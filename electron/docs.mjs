@@ -8,16 +8,15 @@ import path from "node:path";
 import { Type } from "typebox";
 
 // Single source of truth for tool-output size: the same toolOutputLimit the
-// agent applies globally (agent.mjs clip). Previously doc_read defaulted to
-// 8000+ while the global clip cut everything to 4000 — the tool promised
-// more than the model ever saw.
+// agent applies globally (agent.mjs clip), so a tool never promises more
+// than the model ever sees.
 function toolOutputLimit() {
   try {
     const cfg = JSON.parse(fsSync.readFileSync(path.join(os.homedir(), ".granka", "granka.json"), "utf8"));
     const n = Number(cfg.toolOutputLimit);
-    if (Number.isFinite(n) && n >= 500 && n <= 20000) return n;
+    if (Number.isFinite(n) && n >= 500 && n <= 32000) return n;
   } catch (err) { console.error("[granka docs]", err?.message ?? err); }
-  return 4000;
+  return 16000;
 }
 
 const SEARCH_HITS = 12;
@@ -1062,9 +1061,9 @@ export function createDocTools(host) {
     name: "doc_outline",
     label: "Структура документа",
     description:
-      "Показывает структуру PDF/DOCX/MD/TXT без полного текста: число страниц, заголовки, таблицы. " +
-      "Всегда начинай работу с документа этим инструментом, чтобы не читать файл целиком.",
-    promptSnippet: "doc_outline: структура PDF/DOCX (страницы, заголовки, таблицы)",
+      "Shows the structure of a PDF/DOCX/MD/TXT without the full text: page count, headings, tables. " +
+      "Always start document work with this tool instead of reading the whole file.",
+    promptSnippet: "doc_outline: PDF/DOCX structure (pages, headings, tables)",
     parameters: Type.Object({
       path: Type.String({ description: "Путь к файлу" }),
     }),
@@ -1131,9 +1130,9 @@ export function createDocTools(host) {
     name: "doc_read",
     label: "Чтение документа",
     description:
-      "Возвращает текст документа: для PDF — по страницам (from/to), для DOCX — по блокам. " +
-      "Вывод ограничен, чтобы не забивать контекст; если обрезано, будет подсказка со следующей страницей.",
-    promptSnippet: "doc_read: прочитать страницы/блоки PDF/DOCX",
+      "Returns document text: for PDF by pages (from/to), for DOCX by blocks. " +
+      "Output is capped so it does not flood the context; if truncated, a hint names the next page.",
+    promptSnippet: "doc_read: read PDF/DOCX pages/blocks",
     parameters: Type.Object({
       path: Type.String({ description: "Путь к файлу" }),
       from: Type.Optional(Type.Number({ description: "Начальная страница (PDF) или блок (DOCX), с 1" })),
@@ -1200,7 +1199,7 @@ export function createDocTools(host) {
   const searchTool = {
     name: "doc_search",
     label: "Поиск в документе",
-    description: "Ищет строку в PDF/DOCX и возвращает страницы/блоки с фрагментами. Регистр не важен.",
+    description: "Searches a string in a PDF/DOCX and returns pages/blocks with fragments. Case-insensitive.",
     promptSnippet: "doc_search: найти фрагмент в документе по страницам",
     parameters: Type.Object({
       path: Type.String({ description: "Путь к файлу" }),
@@ -1210,7 +1209,7 @@ export function createDocTools(host) {
       const filePath = path.resolve(host.resolve(params.path));
       await ensureReadable(filePath);
       const needle = String(params.query ?? "").toLowerCase();
-      if (!needle) return { content: [{ type: "text", text: "Пустой запрос." }], details: {} };
+      if (!needle) return { content: [{ type: "text", text: "Empty query." }], details: {} };
       const kind = kindOf(filePath);
 
       const units =
@@ -1249,10 +1248,10 @@ export function createDocTools(host) {
     name: "doc_create",
     label: "Создать документ",
     description:
-      "Создаёт DOCX или PDF из markdown-подобного текста (# заголовки, - списки, | таблицы |) с оформлением: " +
-      "шрифт (sans/serif/mono), размер, межстрочный интервал, поля в см, акцентный цвет, колонтитулы, формат страницы. " +
-      "Формат определяется по расширению файла.",
-    promptSnippet: "doc_create: создать DOCX/PDF из markdown с оформлением",
+      "Creates a DOCX or PDF from markdown-like text (# headings, - lists, | tables |) with styling: " +
+      "font (sans/serif/mono), size, line spacing, margins in cm, accent colour, headers/footers, page format. " +
+      "The format is taken from the file extension.",
+    promptSnippet: "doc_create: create a styled DOCX/PDF from markdown",
     parameters: Type.Object({
       path: Type.String({ description: "Куда сохранить (.docx или .pdf)" }),
       content: Type.String({ description: "Содержимое в markdown-lite" }),
@@ -1324,11 +1323,11 @@ async function backupDocumentVersion(filePath) {
     name: "doc_edit",
     label: "Правка документа",
     description:
-      "Точечные правки. DOCX: заменить текст (replace: обязательны find и replace), добавить абзацы/заголовок/таблицу в конец (append). " +
-      "PDF: добавить текст на страницу (add_text: нужны page/text/x/y), закрасить и удалить текст (redact: делается настоящим удалением из content stream + плашка), новую страницу (add_page), вписать поля формы (fill_form: нужны fields; поддерживаются текст, чекбокс, список, radio), объединить файлы (merge: source или sources), повернуть (rotate: degrees), удалить/извлечь/переставить страницы (delete_pages/extract_pages/reorder_pages: pages), разделить (split: at). " +
-      "Перед правкой оригинал сохраняется в <файл>.granka-versions/ — откат копированием обратно. " +
-      "Для смены шрифтов и полей всего документа используй doc_format.",
-    promptSnippet: "doc_edit: точечные правки DOCX/PDF",
+      "Targeted edits. DOCX: replace text (replace: find and replace required), append paragraphs/headings/tables (append). " +
+      "PDF: add text to a page (add_text: page/text/x/y), redact text (real removal from the content stream plus a patch), new page (add_page), fill form fields (fill_form: fields; text, checkbox, list, radio), merge files (merge: source or sources), rotate (rotate: degrees), delete/extract/reorder pages (delete_pages/extract_pages/reorder_pages: pages), split (split: at). " +
+      "Before editing, the original is kept in <file>.granka-versions/ — restore by copying back. " +
+      "For document-wide fonts and margins use doc_format.",
+    promptSnippet: "doc_edit: targeted DOCX/PDF edits",
     parameters: Type.Object({
       path: Type.String({ description: "Путь к файлу" }),
       ops: Type.Optional(
@@ -1514,7 +1513,7 @@ async function backupDocumentVersion(filePath) {
         return { content: [{ type: "text", text: `${filePath}\n${log.join("\n")}` }], details: { ops: log.length } };
       }
 
-      return { content: [{ type: "text", text: "doc_edit работает с .docx и .pdf" }], details: {} };
+      return { content: [{ type: "text", text: "doc_edit работает с .docx и .pdf" }], details: {}, isError: true };
     },
   };
 
@@ -1522,10 +1521,10 @@ async function backupDocumentVersion(filePath) {
     name: "doc_format",
     label: "Оформление документа",
     description:
-      "Меняет оформление всего документа: шрифт (sans/serif/mono), кегль, интервал, поля в см, акцентный цвет заголовков, " +
-      "колонтитулы с номерами страниц, формат страницы, выравнивание. Документ перерисовывается: " +
-      "текст, заголовки, списки и таблицы сохраняются, тонкая вёрстка (картинки, ручные переносы) — нет.",
-    promptSnippet: "doc_format: единый стиль документа (шрифт, поля, колонтитулы)",
+      "Restyles the whole document: font (sans/serif/mono), size, spacing, margins in cm, heading accent colour, " +
+      "headers/footers with page numbers, page format, alignment. The document is redrawn: " +
+      "text, headings, lists and tables are preserved, fine layout (images, manual breaks) is not.",
+    promptSnippet: "doc_format: one document style (font, margins, headers/footers)",
     parameters: Type.Object({
       path: Type.String({ description: "Путь к .docx или .pdf" }),
       style: Type.Object({
@@ -1568,9 +1567,67 @@ async function backupDocumentVersion(filePath) {
         host.emit({ kind: "doc", action: "format", path: filePath });
         return { content: [{ type: "text", text: `PDF переоформлен: ${filePath} (${result.pages} стр.)` }], details: result };
       }
-      return { content: [{ type: "text", text: "doc_format работает с .docx и .pdf" }], details: {} };
+      return { content: [{ type: "text", text: "doc_format работает с .docx и .pdf" }], details: {}, isError: true };
     },
   };
 
-  return { outlineTool, readTool, searchTool, createTool, editTool, formatTool };
+  const batchTool = {
+    name: "doc_batch",
+    label: "Пакетный поиск по папке",
+    description:
+      "Searches a query across all supported documents (PDF/DOCX/XLSX/ODS/CSV/RTF/MD/TXT) " +
+      "in a folder and returns per-file hit counts with the first fragment. " +
+      "Use to scan a whole folder of documents at once instead of per-file doc_search.",
+    promptSnippet: "doc_batch: поиск запроса по всем документам в папке",
+    parameters: Type.Object({
+      dir: Type.String({ description: "Папка с документами" }),
+      query: Type.String({ description: "Что искать" }),
+    }),
+    execute: async (_id, params) => {
+      const dirPath = path.resolve(host.resolve(String(params.dir ?? "")));
+      const needle = String(params.query ?? "").trim();
+      if (!needle) return { content: [{ type: "text", text: "Empty query." }], details: {} };
+      let entries;
+      try {
+        entries = await fs.readdir(dirPath, { withFileTypes: true });
+      } catch (err) {
+        return { content: [{ type: "text", text: `Не удалось прочитать папку: ${err?.message ?? err}` }], details: {} };
+      }
+      const files = entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => path.join(dirPath, entry.name))
+        .filter((file) => !["other", "html"].includes(kindOf(file)))
+        .slice(0, 40);
+      if (!files.length) {
+        return { content: [{ type: "text", text: `В папке нет поддерживаемых документов: ${dirPath}` }], details: {} };
+      }
+      // Limited fan-out: documents parse in the main process, so a flat
+      // Promise.all over 40 files would spike CPU/memory. 4 workers keep
+      // the scan fast without freezing the app; order is preserved.
+      const results = new Array(files.length);
+      const hitsByIndex = new Array(files.length).fill(0);
+      let next = 0;
+      const worker = async () => {
+        while (next < files.length) {
+          const index = next++;
+          const file = files[index];
+          try {
+            const result = await searchTool.execute("doc_batch", { path: file, query: needle });
+            const hits = result.details?.hits ?? 0;
+            hitsByIndex[index] = hits;
+            const first = hits ? String(result.content[0]?.text ?? "").split("\n")[0] : "";
+            results[index] = `${path.basename(file)}: ${hits ? `${hits} совп. · ${first}` : "нет совпадений"}`;
+          } catch (err) {
+            results[index] = `${path.basename(file)}: ошибка (${err?.message ?? err})`;
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, files.length) }, () => worker()));
+      const total = hitsByIndex.reduce((sum, n) => sum + n, 0);
+      const lines = [`Документов: ${files.length}, запрос: «${needle}»`, ...results];
+      return { content: [{ type: "text", text: lines.join("\n") }], details: { files: files.length, hits: total } };
+    },
+  };
+
+  return { outlineTool, readTool, searchTool, createTool, editTool, formatTool, batchTool };
 }

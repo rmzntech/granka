@@ -1,12 +1,12 @@
 {
   "name": "granka",
-  "version": "1.0.0",
+  "version": "1.14.1",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
     "start": "electron .",
-    "test": "node test/smoke.mjs && node test/markdown.mjs && node test/tools.mjs && node test/docs.mjs && node test/themes.mjs && node test/css-tokens.mjs",
+    "test": "node test/smoke.mjs && node test/markdown.mjs && node test/tools.mjs && node test/docs.mjs && node test/themes.mjs && node test/css-tokens.mjs && node test/prompt.mjs && node test/memory.mjs && node test/subagents.mjs",
     "test:ui": "electron test/ui.mjs",
     "test:settings": "electron test/settings-ui.mjs",
     "test:all": "npm test && npm run test:ui && npm run test:settings && npm run test:theme",

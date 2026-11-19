@@ -44,7 +44,7 @@ for (const id of ids) {
   assert.ok(theme.name && theme.name.length > 1, `${id}: name`);
 
   const { tokens } = themeVars(id, "");
-  for (const key of ["bg", "sidebar", "chrome", "text", "text2", "accent", "separator", "fill", "fill2", "code", "rowActive", "danger", "success", "shadow", "accentText"]) {
+  for (const key of ["bg", "sidebar", "chrome", "text", "text2", "accent", "separator", "fill", "fill2", "code", "rowActive", "danger", "success", "shadow", "accentText", "accentInk", "dangerInk", "warning", "glassBg", "glassBorder", "sh1", "sh2", "sh3", "sh4", "radiusL"]) {
     assert.ok(tokens[key], `${id}: token ${key} missing`);
   }
 
@@ -53,7 +53,13 @@ for (const id of ids) {
   const accentOnBg = contrast(tokens.accent, tokens.bg);
   const onAccent = contrast(tokens.accentText, tokens.accent);
   assert.ok(body >= 7, `${id}: body text contrast ${body?.toFixed(2)} < 7`);
-  assert.ok(secondary >= 4, `${id}: secondary text contrast ${secondary?.toFixed(2)} < 4`);
+  assert.ok(secondary >= 4.5, `${id}: secondary text contrast ${secondary?.toFixed(2)} < 4.5`);
+  const codeInk = contrast(tokens.codeText, tokens.code ?? tokens.bg);
+  assert.ok(codeInk >= 4.5, `${id}: code ink contrast ${codeInk?.toFixed(2)} < 4.5`);
+  const accentInk = contrast(tokens.accentInk, tokens.bg);
+  assert.ok(accentInk >= 4.5, `${id}: accent ink contrast ${accentInk?.toFixed(2)} < 4.5`);
+  const dangerInk = contrast(tokens.dangerInk, tokens.bg);
+  assert.ok(dangerInk >= 4.5, `${id}: danger ink contrast ${dangerInk?.toFixed(2)} < 4.5`);
   assert.ok(accentOnBg >= 2.2, `${id}: accent vs bg ${accentOnBg?.toFixed(2)} < 2.2`);
   assert.ok(onAccent >= 3, `${id}: accentText contrast ${onAccent?.toFixed(2)} < 3`);
 

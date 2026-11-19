@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("granka", {
   duplicateSession: (id) => ipcRenderer.invoke("sessions:duplicate", id),
   assignSession: (id, projectId) => ipcRenderer.invoke("sessions:assign", id, projectId),
   exportSessions: (ids) => ipcRenderer.invoke("sessions:export", ids),
+  exportSessionFile: (ids) => ipcRenderer.invoke("sessions:exportFile", ids),
   revealSession: (id) => ipcRenderer.invoke("sessions:reveal", id),
   autoTitle: (id) => ipcRenderer.invoke("sessions:autoTitle", id),
 
@@ -29,9 +30,18 @@ contextBridge.exposeInMainWorld("granka", {
   getProjectRules: (id) => ipcRenderer.invoke("projects:rules", id),
   getRulesForPath: (dir) => ipcRenderer.invoke("projects:rulesForPath", dir),
   saveProjectRules: (id, text) => ipcRenderer.invoke("projects:saveRules", id, text),
+  getMemory: () => ipcRenderer.invoke("memory:get"),
+  saveMemory: (text) => ipcRenderer.invoke("memory:save", text),
+  getProjectMemory: (id) => ipcRenderer.invoke("projects:memory", id),
+  saveProjectMemory: (id, text) => ipcRenderer.invoke("projects:saveMemory", id, text),
 
   listCommands: () => ipcRenderer.invoke("commands:list"),
   listSubagents: () => ipcRenderer.invoke("subagents:list"),
+  revealSubagentsDir: () => ipcRenderer.invoke("subagents:reveal"),
+  listBackgroundTasks: () => ipcRenderer.invoke("tasks:list"),
+  cancelBackgroundTask: (id) => ipcRenderer.invoke("tasks:cancel", id),
+  mcpStatus: () => ipcRenderer.invoke("mcp:status"),
+  contextBreakdown: () => ipcRenderer.invoke("chat:contextBreakdown"),
 
   attachFiles: (paths) => ipcRenderer.invoke("attach:add", paths),
   attachmentDataUrl: (filePath) => ipcRenderer.invoke("attach:dataUrl", filePath),
@@ -63,7 +73,8 @@ contextBridge.exposeInMainWorld("granka", {
   abort: () => ipcRenderer.invoke("chat:abort"),
   pickDir: () => ipcRenderer.invoke("dialog:pickDir"),
   pickFiles: () => ipcRenderer.invoke("dialog:pickFiles"),
-  confirm: (message, detail) => ipcRenderer.invoke("dialog:confirm", message, detail),
+  pickImage: () => ipcRenderer.invoke("dialog:pickImage"),
+  confirm: (message, detail, confirmLabel) => ipcRenderer.invoke("dialog:confirm", message, detail, confirmLabel),
 
   onDelta: (cb) => ipcRenderer.on("chat:delta", (_event, delta) => cb(delta)),
   onTool: (cb) => ipcRenderer.on("chat:tool", (_event, tool) => cb(tool)),
@@ -77,6 +88,9 @@ contextBridge.exposeInMainWorld("granka", {
     ipcRenderer.on("menu:new-chat", () => cb("new-chat"));
     ipcRenderer.on("menu:all-sessions", () => cb("all-sessions"));
     ipcRenderer.on("menu:toggle-sidebar", () => cb("toggle-sidebar"));
+    ipcRenderer.on("menu:stats", () => cb("stats"));
+    ipcRenderer.on("menu:project", () => cb("project"));
+    ipcRenderer.on("menu:compact", () => cb("compact"));
   },
 
   trayBusy: (value) => ipcRenderer.invoke("tray:busy", value),
@@ -86,6 +100,8 @@ contextBridge.exposeInMainWorld("granka", {
   windowIsMaximized: () => ipcRenderer.invoke("window:isMaximized"),
   openSettings: (pane) => ipcRenderer.invoke("window:openSettings", pane ?? ""),
   accentColor: () => ipcRenderer.invoke("app:accent"),
+  version: () => ipcRenderer.invoke("app:version"),
+  wallpaperDataUrl: (target) => ipcRenderer.invoke("app:wallpaper", target),
   lastPrompt: () => ipcRenderer.invoke("chat:lastPrompt"),
   cancelCompaction: () => ipcRenderer.invoke("chat:compactCancel"),
 });
