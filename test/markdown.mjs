@@ -28,6 +28,15 @@ assert.match(table, /<td class="align-right">120<\/td>/);
 assert.match(md("| a | b |\n|:--|:-:|\n| 1 | 2 |"), /align-center/);
 assert.equal(md("| a | b |\n|---|---|"), '<div class="mdTableWrap"><table><thead><tr><th>a</th><th>b</th></tr></thead></table></div>');
 
+// a list may start right after a paragraph line, with no blank line
+assert.equal(md("Итог:\n- один\n- два"), "<p>Итог:</p><ul><li>один</li><li>два</li></ul>");
+// mixed bullets and numbers stay two separate lists (numbers are not lost)
+assert.equal(md("- а\n1. б\n2. в"), "<ul><li>а</li></ul><ol><li>б</li><li>в</li></ol>");
+// nested item belongs to its parent <li>
+assert.equal(md("- а\n  - б\n- в"), "<ul><li>а<ul><li>б</li></ul></li><li>в</li></ul>");
+// text after a list closes it
+assert.equal(md("- а\nконец"), "<ul><li>а</li></ul><p>конец</p>");
+
 // blockquotes
 assert.equal(md("> цитата"), "<blockquote>цитата</blockquote>");
 assert.equal(md("> одна\n> две"), "<blockquote>одна<br>две</blockquote>");

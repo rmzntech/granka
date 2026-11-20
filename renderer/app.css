@@ -1192,8 +1192,10 @@ pre:hover .codeCopy,
 }
 
 .divider {
-  max-width: var(--col-msg);
-  margin: 16px auto;
+  /* Same column as the messages: auto offsets made dividers narrower than
+     the bubble above them. */
+  max-width: 100%;
+  margin: 16px 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1351,12 +1353,26 @@ pre:hover .codeCopy,
   flex: none;
 }
 
+/* live activity line: sits above the input panel, never inside it */
+.activityRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 4px;
+  min-height: 0;
+}
+
+/* an empty line would still take a row of height */
+.activityRow:not(:has(.statusText:not(:empty))) {
+  display: none;
+}
+
 .statusText {
-  max-width: 220px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-sm);
+  font: var(--meta) / 1.4 var(--mono);
   color: var(--text-2);
 }
 
@@ -2309,18 +2325,62 @@ mark {
 
 /* ---------------- analytics ---------------- */
 
-.statsCards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 10px;
-  margin-bottom: 16px;
+.statsToolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
 }
 
-.statsCard {
+.statsSpacer {
+  flex: 1 1 auto;
+}
+
+.statsProjectBtn {
+  max-width: 260px;
+}
+
+.statsProjectBtn > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* KPI column + one chart: the numbers on the left describe the same slice
+   as the chart on the right, so they share one row. */
+.statsLayout {
+  display: grid;
+  grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 900px) {
+  .statsLayout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.statsKpis {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.statsKpi {
+  flex: 1;
+  min-width: 0;
   padding: 10px 12px;
   border: var(--hair) solid var(--separator);
   border-radius: var(--radius-sm);
   background: var(--fill);
+}
+
+.statsKpi.isBig {
+  background: var(--row-active);
 }
 
 .statsLabel {
@@ -2331,10 +2391,14 @@ mark {
 }
 
 .statsValue {
-  margin-top: 4px;
+  margin-top: 2px;
   font-size: 20px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+.statsKpi.isBig .statsValue {
+  font-size: 26px;
 }
 
 .statsNote {
@@ -2342,24 +2406,52 @@ mark {
   color: var(--text-2);
 }
 
+.statsPanel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 12px;
+  border: var(--hair) solid var(--separator);
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+}
+
+.statsPanelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.statsPanelHead h2 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.statsPanelMeta {
+  font: var(--meta) / 1.3 var(--mono);
+  color: var(--text-2);
+}
+
 .statsChart {
   display: flex;
   align-items: flex-end;
-  gap: 4px;
-  height: 120px;
-  margin-bottom: 18px;
-  padding: 8px;
-  border: var(--hair) solid var(--separator);
-  border-radius: var(--radius-sm);
+  gap: 3px;
+  flex: 1;
+  min-height: 140px;
+  height: 180px;
 }
 
 .statsBar {
   flex: 1;
   display: flex;
   align-items: flex-end;
+  min-width: 2px;
   height: 100%;
   border-radius: var(--radius-xs);
-  background: var(--fill);
+  background: var(--fill-2);
 }
 
 .statsBar span {
@@ -2368,35 +2460,14 @@ mark {
   background: var(--accent);
 }
 
-.statsTabs {
-  display: flex;
-  gap: 2px;
-  margin-bottom: 10px;
-}
-
-.statsTab {
-  padding: 4px 10px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--text-2);
-  cursor: pointer;
-}
-
-.statsTab:hover {
-  background: var(--fill);
-  color: var(--text);
-}
-
-.statsTab.isOn {
-  background: var(--fill);
-  color: var(--text);
+/* today's column reads as "now" */
+.statsBar.isToday {
+  background: var(--row-active);
 }
 
 .statsMetric {
   display: flex;
   gap: 2px;
-  margin-bottom: 6px;
 }
 
 .statsMetricBtn {
@@ -2409,51 +2480,22 @@ mark {
   cursor: pointer;
 }
 
-.statsMetricBtn.isOn {
-  background: var(--fill);
+.statsMetricBtn:hover {
+  background: var(--fill-2);
   color: var(--text);
 }
 
-.statsHBars {
+.statsMetricBtn.isOn {
+  background: var(--fill-2);
+  color: var(--text);
+}
+
+.statsAxis {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 8px;
-  border: var(--hair) solid var(--separator);
-  border-radius: var(--radius-sm);
-  margin-bottom: 18px;
-}
-
-.statsHRow {
-  display: grid;
-  grid-template-columns: minmax(80px, 200px) minmax(0, 1fr) auto;
-  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  font-size: var(--fs-md);
-}
-
-.statsHName {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.statsHBar {
-  height: 8px;
-  border-radius: var(--radius-xs);
-  background: var(--fill);
-  overflow: hidden;
-}
-
-.statsHBar span {
-  display: block;
-  height: 100%;
-  border-radius: var(--radius-xs);
-  background: var(--accent);
-}
-
-.statsHValue {
-  font-variant-numeric: tabular-nums;
+  margin-top: 8px;
+  font: var(--meta) / 1.3 var(--mono);
   color: var(--text-2);
 }
 
@@ -2465,27 +2507,99 @@ mark {
 
 .statsRow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(56px, auto) minmax(56px, auto) minmax(64px, auto);
+  grid-template-columns: minmax(0, 1fr) 76px 92px 92px 84px;
   gap: 8px;
+  align-items: center;
   padding: 6px 8px;
   font-size: var(--fs-md);
   border-radius: var(--radius-xs);
 }
 
-.statsRow span:not(:first-child) {
+.statsRow > span:not(.statsModel):not(.statsMini) {
   text-align: right;
   font-variant-numeric: tabular-nums;
-}
-
-.statsRow.isHead {
-  font: var(--meta) / 1.3 var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--text-2);
 }
 
+.statsRow.isHead {
+  padding-top: 0;
+}
+
 .statsRow:not(.isHead):nth-child(even) {
-  background: var(--fill);
+  background: var(--fill-2);
+}
+
+.statsModel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statsHeadCell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--text-2);
+}
+
+.statsHeadCell.isNumeric {
+  justify-content: flex-end;
+}
+
+.statsHeadCell:hover,
+.statsHeadCell.isSorted {
+  color: var(--text);
+}
+
+.statsSortBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: var(--meta) / 1.3 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.statsSortIcon {
+  width: 11px;
+  height: 11px;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.statsHeadCell:hover .statsSortIcon {
+  opacity: 0.5;
+}
+
+.statsHeadCell.isSorted .statsSortIcon {
+  opacity: 1;
+}
+
+.statsSortIcon.isAsc {
+  transform: rotate(180deg);
+}
+
+.statsHeadBar {
+  min-width: 0;
+}
+
+.statsMini {
+  height: 6px;
+  border-radius: var(--radius-xs);
+  background: var(--fill-2);
+  overflow: hidden;
+}
+
+.statsMini span {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-xs);
+  background: var(--accent);
 }
 
 .codePreview {
@@ -2712,19 +2826,25 @@ mark {
 /* ---------------- tool rows ---------------- */
 
 
+/* Every tool row is the same full-width row: one list, one grid, one
+   alignment for icon / label / preview / time. */
 .tool {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  box-sizing: border-box;
   padding: 4px 9px;
   border: var(--hair) solid var(--separator);
-  border-radius: var(--radius-pill);
+  /* Full-width rows read as list rows; a pill at this width is a capsule. */
+  border-radius: var(--radius-ctl);
   background: var(--fill);
   color: var(--text-2);
   font: var(--meta) / 1.4 var(--mono);
   cursor: pointer;
   white-space: nowrap;
   max-width: 100%;
+  text-align: left;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
@@ -2758,14 +2878,16 @@ mark {
 }
 
 .toolArgs {
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-2);
 }
 
 .toolTime {
+  flex: none;
+  margin-left: auto;
   color: var(--text-2);
 }
 
@@ -2775,10 +2897,9 @@ mark {
   font-weight: 600;
 }
 
-.toolBlockHead.hasError,
-.toolGroupHead.hasError {
-  border-color: var(--danger);
-}
+/* An error inside a folded block is a red count, not a red outline: the
+   outline would paint the whole summary as broken. Only the failing rows
+   themselves get the danger border (see .tool.error). */
 
 .tool.done {
   border-color: var(--separator);
@@ -2789,30 +2910,31 @@ mark {
   border-color: var(--danger);
 }
 
-/* subagent (task) chips sit directly in the message flow, outside
-   toolBlock/toolGroup: give them breathing room on every side */
+/* tool rows follow the message column, with one consistent vertical step */
 .msg > .tool {
-  margin: 8px 4px;
+  margin: 6px 0;
 }
 
 /* summary block for a whole turn in "live" tool display mode */
 
 .toolBlock {
+  /* Fills the message column it sits in: capping at --col-msg made tool rows
+     visibly narrower than the text of their own message. */
   width: 100%;
-  max-width: var(--col-msg);
-  margin: 8px auto;
+  max-width: 100%;
+  margin: 6px 0;
   box-sizing: border-box;
 }
 
 .toolBlockHead {
   width: 100%;
   box-sizing: border-box;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
   padding: 4px 9px;
   border: var(--hair) solid var(--separator);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-ctl);
   background: var(--fill);
   color: var(--text-2);
   font: var(--meta) / 1.4 var(--mono);
@@ -2843,48 +2965,50 @@ mark {
 
 .toolList {
   display: none;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 .toolBlock.isOpen > .toolList {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
   width: 100%;
 }
 
-/* In a list, chips are full-width rows: same width every time */
+/* Inside a list the container gap is the only spacing: margins on children
+   would add up to a different step than the rows above and below them. */
 .toolList > .tool,
-.toolGroupList > .tool {
-  width: 100%;
-  justify-content: flex-start;
-  box-sizing: border-box;
-}
-
-.toolList > .tool .toolArgs,
-.toolGroupList > .tool .toolArgs {
-  flex: 1;
+.toolList > .toolGroup,
+.toolList > .toolDetail,
+.toolGroupList > .tool,
+.toolGroupList > .toolDetail {
+  margin: 0;
 }
 
 /* groups of consecutive same-tool calls */
 
 .toolGroup {
   width: 100%;
-  margin: 8px 0;
+  margin: 6px 0;
   box-sizing: border-box;
+}
+
+.toolGroupList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 .toolGroupHead {
   width: 100%;
   box-sizing: border-box;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
+  padding: 4px 9px;
   border: var(--hair) solid var(--separator);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-ctl);
   background: var(--fill);
   color: var(--text-2);
   font: var(--meta) / 1.4 var(--mono);
@@ -2904,10 +3028,6 @@ mark {
   flex: none;
 }
 
-.toolGroupList .tool {
-  margin-top: 4px;
-}
-
 .toolGroup:not(.isCollapsed) > .toolGroupHead > .chev {
   transform: rotate(180deg);
 }
@@ -2921,13 +3041,13 @@ mark {
 .toolDetail {
   width: 100%;
   box-sizing: border-box;
-  margin: 6px 0 10px;
+  margin: 4px 0 0;
   padding: 10px 12px;
-  border: var(--hair) solid var(--glass-border);
+  border: var(--hair) solid var(--separator);
   border-radius: var(--radius-md);
-  background: var(--glass-bg);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  /* No glass here: a blurred panel over the message flow reads as a
+     different layer than the rows it belongs to. */
+  background: var(--bg);
   box-shadow: var(--sh1);
   font: var(--fs-md) / 1.55 var(--mono);
 }
@@ -3047,8 +3167,9 @@ mark {
 /* model thinking block */
 
 .thinking {
-  max-width: var(--col-msg);
-  margin: 0 auto 8px;
+  width: 100%;
+  max-width: 100%;
+  margin: 6px 0;
   border: var(--hair) solid var(--separator);
   border-radius: var(--radius-md);
   background: var(--fill);
@@ -3056,10 +3177,7 @@ mark {
 }
 
 .thinking.isOpen {
-  background: var(--glass-bg);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
-  border-color: var(--glass-border);
+  background: var(--bg);
   box-shadow: var(--sh1);
 }
 
@@ -3742,8 +3860,8 @@ body,
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  max-width: var(--col-msg);
-  margin: -6px auto 12px;
+  max-width: 100%;
+  margin: 6px 0 12px;
   padding: 6px 12px;
   border-left: 2px solid var(--accent);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;

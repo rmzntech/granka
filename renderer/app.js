@@ -147,14 +147,39 @@ function setStatus(text) {
 
 // Live activity line shown while the agent works — the main feedback when
 // thinking and tool calls are hidden. States: think / work / write.
+// The wording never names a tool: which tool runs is the tool panel's job,
+// and the line above the composer is about the agent, not its plumbing.
 let activity = "think";
-let activityTool = "";
+let activityPhrase = 0;
+let activityTimer = null;
+const ACTIVITY_PHRASES = {
+  think: ["Думает", "Размышляет", "Обдумывает", "Взвешивает варианты", "Осознаёт себя"],
+  work: ["Работает", "Трудится", "Копается в файлах", "Разбирается", "Осознаёт себя"],
+  write: ["Пишет ответ", "Формулирует", "Печатает", "Подбирает слова"],
+};
+const ACTIVITY_STEP_MS = 3200;
 
-function setActivity(kind, toolName = "") {
+function setActivity(kind) {
   if (!busy) return;
-  activity = kind;
-  activityTool = toolName;
+  if (kind !== activity) {
+    activity = kind;
+    activityPhrase = 0;
+  }
   renderActivity();
+}
+
+function startActivityRotation() {
+  if (activityTimer) return;
+  activityTimer = setInterval(() => {
+    activityPhrase += 1;
+    renderActivity();
+  }, ACTIVITY_STEP_MS);
+}
+
+function stopActivityRotation() {
+  if (!activityTimer) return;
+  clearInterval(activityTimer);
+  activityTimer = null;
 }
 
 function renderActivity() {
@@ -162,16 +187,15 @@ function renderActivity() {
   if (!busy) {
     status.textContent = "";
     status.removeAttribute("data-activity");
+    stopActivityRotation();
     return;
   }
-  const labels = {
-    think: "Думает",
-    work: activityTool ? `Работает: ${TOOL_LABELS[activityTool] ?? activityTool}` : "Работает",
-    write: "Пишет ответ",
-  };
+  const phrases = ACTIVITY_PHRASES[activity] ?? ACTIVITY_PHRASES.think;
+  const label = phrases[activityPhrase % phrases.length];
   status.dataset.activity = activity;
   const queue = queued > 0 ? ` · в очереди: ${queued}` : "";
-  status.textContent = `${labels[activity] ?? "Думает"}${queue}`;
+  status.textContent = `${label}${queue}`;
+  startActivityRotation();
 }
 
 function announce(text) {
@@ -283,7 +307,10 @@ function syncQueueBadge() {
 }
 
 function formatTokens(n) {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
+  const value = Number(n) || 0;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+  return String(value);
 }
 
 // Russian plural: plural(5, ["диалог", "диалога", "диалогов"]) -> "5 диалогов"
@@ -734,12 +761,44 @@ function setView(next) {
   if (next === "stats") buildStatsPane();
 }
 
+// Analytics — "сводка + фокус": KPI column on the left, one chart on the
+// right, models as the single table below. Projects are a filter, not a third
+// tab: the same numbers must describe the same slice everywhere.
+let statsPeriod = 7; // days, 0 = всё время
+let statsProject = ""; // "" = все проекты
+let statsMetric = "cost"; // cost | tokens
+let statsSort = { key: "cost", dir: -1 };
+
+const STATS_PERIODS = [
+  { days: 7, label: "7 дней" },
+  { days: 30, label: "30 дней" },
+  { days: 0, label: "Всё время" },
+];
+
+function statsModelName(modelId) {
+  return globalThis.grankaModels?.modelName?.(modelId) ?? modelId;
+}
+
+function statsDayLabel(day) {
+  if (!day) return "";
+  const date = new Date(`${day}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return day;
+  return date.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+}
+
+function statsMoney(value) {
+  const amount = Number(value) || 0;
+  if (amount >= 1) return `$${amount.toFixed(2)}`;
+  if (amount >= 0.01) return `$${amount.toFixed(3)}`;
+  return `$${amount.toFixed(4)}`;
+}
+
 async function buildStatsPane() {
   const pane = $("statsPane");
   pane.replaceChildren();
   let data;
   try {
-    data = await granka.getStats();
+    data = await granka.getStats({ days: statsPeriod, project: statsProject });
   } catch (err) {
     $("statsMeta").textContent = "";
     const box = document.createElement("div");
@@ -755,166 +814,345 @@ async function buildStatsPane() {
     pane.append(box);
     return;
   }
-  $("statsMeta").textContent = `${data.totals.calls} запросов · $${data.totals.cost.toFixed(4)} · ${data.totals.input + data.totals.output} токенов`;
 
-  if (!data.totals.calls) {
+  const { totals, byDay, byModel, byProject } = data;
+  const periodLabel = STATS_PERIODS.find((entry) => entry.days === statsPeriod)?.label ?? "Период";
+  const scope = statsProject || "все проекты";
+  $("statsMeta").textContent = `${periodLabel} · ${scope} · ${plural(totals.calls, ["запрос", "запроса", "запросов"])} · ${statsMoney(totals.cost)}`;
+
+  if (!totals.calls) {
     const hint = document.createElement("div");
     hint.className = "hint";
-    hint.textContent = "Пока нет данных: статистика появится после первого ответа модели.";
+    hint.textContent = data.range?.hasHistory
+      ? "За выбранный период запросов нет. Возьмите другой период или проект."
+      : "Пока нет данных: статистика появится после первого ответа модели.";
     pane.append(hint);
+    if (data.range?.hasHistory && statsPeriod !== 0) {
+      const all = document.createElement("button");
+      all.className = "ghostBtn";
+      all.textContent = "Показать всё время";
+      all.addEventListener("click", () => {
+        statsPeriod = 0;
+        buildStatsPane();
+      });
+      pane.append(all);
+    }
     return;
   }
 
-  const summary = document.createElement("div");
-  summary.className = "statsCards";
-  const card = (label, value, note) => {
-    const box = document.createElement("div");
-    box.className = "statsCard";
-    const title = document.createElement("div");
-    title.className = "statsLabel";
-    title.textContent = label;
-    const big = document.createElement("div");
-    big.className = "statsValue";
-    big.textContent = value;
-    box.append(title, big);
-    if (note) {
-      const small = document.createElement("div");
-      small.className = "statsNote";
-      small.textContent = note;
-      box.append(small);
-    }
-    return box;
-  };
-  summary.append(
-    card("Стоимость", `$${data.totals.cost.toFixed(3)}`, data.totals.billedCalls ? `${data.totals.billedCalls}/${data.totals.calls} вызовов — по счёту провайдера` : "оценка по каталогу"),
-    card("Запросы", String(data.totals.calls), plural(data.byDay.length, ["день", "дня", "дней"])),
-    card("Вход", formatTokens(data.totals.input), "токенов, включая кэш"),
-    card("Кэш", formatTokens((data.totals.cacheRead ?? 0) + (data.totals.cacheWrite ?? 0)), "чтение + запись"),
-    card("Выход", formatTokens(data.totals.output), "токенов"),
-  );
-  pane.append(summary);
+  pane.append(buildStatsToolbar(byProject));
 
-  // Charts: tabs for days (cost/tokens), projects and models.
-  let chartMode = "days";
-  let dayMetric = "cost";
-  const tabs = document.createElement("div");
-  tabs.className = "statsTabs";
-  tabs.setAttribute("role", "tablist");
-  const chartBox = document.createElement("div");
-  const hbar = (label, value, share, title) => {
-    const row = document.createElement("div");
-    row.className = "statsHRow";
-    row.title = title;
-    const name = document.createElement("span");
-    name.className = "statsHName";
-    name.textContent = label;
-    const track = document.createElement("span");
-    track.className = "statsHBar";
-    const fill = document.createElement("span");
-    fill.style.width = `${Math.max(2, Math.round(share * 100))}%`;
-    track.append(fill);
-    const valueEl = document.createElement("span");
-    valueEl.className = "statsHValue";
-    valueEl.textContent = value;
-    row.append(name, track, valueEl);
-    return row;
-  };
-  const renderChart = () => {
-    for (const btn of tabs.querySelectorAll("button")) {
-      const on = btn.dataset.mode === chartMode;
-      btn.classList.toggle("isOn", on);
-      btn.setAttribute("aria-selected", String(on));
-    }
-    chartBox.replaceChildren();
-    if (chartMode === "days") {
-      const byDay = data.byDay;
-      const values = byDay.map((day) => (dayMetric === "cost" ? day.cost : day.input + day.output));
-      const max = Math.max(...values, dayMetric === "cost" ? 0.0001 : 1);
-      const chart = document.createElement("div");
-      chart.className = "statsChart";
-      chart.setAttribute("role", "img");
-      chart.setAttribute("aria-label", dayMetric === "cost"
-        ? `Расходы по дням: максимум $${max.toFixed(4)}, дней: ${byDay.length}`
-        : `Токены по дням: максимум ${formatTokens(max)}, дней: ${byDay.length}`);
-      byDay.forEach((day, index) => {
-        const column = document.createElement("div");
-        column.className = "statsBar";
-        column.title = dayMetric === "cost"
-          ? `${day.day}: ${day.calls} запросов · $${day.cost.toFixed(4)}`
-          : `${day.day}: ${formatTokens(day.input + day.output)} токенов · ${day.calls} запросов`;
-        const fill = document.createElement("span");
-        fill.style.height = `${Math.max(2, Math.round((values[index] / max) * 100))}%`;
-        column.append(fill);
-        chart.append(column);
-      });
-      const metric = document.createElement("div");
-      metric.className = "statsMetric";
-      for (const [key, label] of [["cost", "Стоимость"], ["tokens", "Токены"]]) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "statsMetricBtn";
-        btn.textContent = label;
-        btn.classList.toggle("isOn", dayMetric === key);
-        btn.addEventListener("click", () => { dayMetric = key; renderChart(); });
-        metric.append(btn);
-      }
-      chartBox.append(metric, chart);
-    } else {
-      const rows = chartMode === "projects" ? data.byProject : data.byModel;
-      const labelKey = chartMode === "projects" ? "project" : "model";
-      const total = Math.max(...rows.map((row) => row.cost), 0.0001);
-      const bars = document.createElement("div");
-      bars.className = "statsHBars";
-      bars.setAttribute("role", "img");
-      bars.setAttribute("aria-label", chartMode === "projects" ? "Расход по проектам" : "Расход по моделям");
-      for (const row of rows) {
-        const name = chartMode === "projects" ? row[labelKey] : globalThis.grankaModels.modelName(row[labelKey]);
-        bars.append(hbar(name, `$${row.cost.toFixed(4)} · ${formatTokens(row.input + row.output)}`, row.cost / total,
-          `${row.calls} запросов · $${row.cost.toFixed(4)}`));
-      }
-      chartBox.append(bars);
-    }
-  };
-  for (const [mode, label] of [["days", "По дням"], ["projects", "По проектам"], ["models", "По моделям"]]) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.dataset.mode = mode;
-    btn.className = "statsTab";
-    btn.setAttribute("role", "tab");
-    btn.textContent = label;
-    btn.addEventListener("click", () => { chartMode = mode; renderChart(); });
-    tabs.append(btn);
+  // Days without a single request still belong on the axis: a 7-day chart
+  // with 6 bars silently drops a gap and shifts the whole picture.
+  const series = statsDailySeries(byDay, statsPeriod);
+  const layout = document.createElement("div");
+  layout.className = "statsLayout";
+  layout.append(buildStatsKpis(totals));
+  layout.append(buildStatsChartCard(series, totals));
+  pane.append(layout);
+  pane.append(buildStatsModels(byModel));
+}
+
+// --- analytics: controls ---------------------------------------------------
+
+function buildStatsToolbar(byProject) {
+  const bar = document.createElement("div");
+  bar.className = "statsToolbar";
+
+  const segmented = document.createElement("div");
+  segmented.className = "segmented";
+  segmented.setAttribute("role", "tablist");
+  segmented.setAttribute("aria-label", "Период");
+  for (const entry of STATS_PERIODS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `segment${entry.days === statsPeriod ? " isActive" : ""}`;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(entry.days === statsPeriod));
+    button.textContent = entry.label;
+    button.addEventListener("click", () => {
+      if (statsPeriod === entry.days) return;
+      statsPeriod = entry.days;
+      buildStatsPane();
+    });
+    segmented.append(button);
   }
-  pane.append(tabs, chartBox);
-  renderChart();
+  bar.append(segmented);
+
+  const spacer = document.createElement("span");
+  spacer.className = "statsSpacer";
+  bar.append(spacer);
+
+  const filter = document.createElement("button");
+  filter.type = "button";
+  filter.className = "popupBtn statsProjectBtn";
+  filter.setAttribute("aria-haspopup", "dialog");
+  filter.setAttribute("aria-label", "Фильтр по проекту");
+  filter.append(svgIcon("folder"));
+  const name = document.createElement("span");
+  name.textContent = statsProject || "Все проекты";
+  filter.append(name, svgIcon("chevron-down", "icon chevron"));
+  filter.addEventListener("click", () => {
+    openPopover(filter, (panel) => {
+      const allTimeCost = byProject.reduce((sum, row) => sum + row.cost, 0);
+      panel.append(popoverItem("Все проекты", {
+        current: !statsProject,
+        meta: statsMoney(allTimeCost),
+        onSelect: () => {
+          statsProject = "";
+          buildStatsPane();
+        },
+      }));
+      for (const row of byProject) {
+        panel.append(popoverItem(row.project, {
+          current: row.project === statsProject,
+          meta: statsMoney(row.cost),
+          onSelect: () => {
+            statsProject = row.project;
+            buildStatsPane();
+          },
+        }));
+      }
+    });
+  });
+  bar.append(filter);
+  return bar;
+}
+
+function statsDailySeries(byDay, period) {
+  if (!byDay.length) return [];
+  const byDate = new Map(byDay.map((row) => [row.day, row]));
+  const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const DAY = 24 * 60 * 60 * 1000;
+  const todayStart = Date.parse(`${dayKey(Date.now())}T00:00:00Z`);
+  const start = period > 0
+    ? todayStart - (period - 1) * DAY
+    : Date.parse(`${byDay[0].day}T00:00:00Z`);
+  const end = period > 0 ? todayStart : Date.parse(`${byDay[byDay.length - 1].day}T00:00:00Z`);
+  const out = [];
+  for (let ms = start; ms <= end; ms += DAY) {
+    const key = dayKey(ms);
+    out.push(byDate.get(key) ?? { day: key, calls: 0, cost: 0, input: 0, output: 0 });
+  }
+  return out.slice(-180);
+}
+
+// --- analytics: KPI column -------------------------------------------------
+
+function buildStatsKpis(totals) {
+  const column = document.createElement("div");
+  column.className = "statsKpis";
+  const tokens = totals.input + totals.output;
+  const cacheShare = totals.input ? totals.cacheRead / totals.input : 0;
+  const perCall = totals.calls ? totals.cost / totals.calls : 0;
+  const rows = [
+    {
+      label: "Стоимость",
+      value: statsMoney(totals.cost),
+      note: totals.billedCalls ? `${totals.billedCalls} из ${totals.calls} — по счёту провайдера` : "оценка по каталогу моделей",
+      big: true,
+    },
+    { label: "Запросы", value: String(totals.calls), note: `${statsMoney(perCall)} за запрос` },
+    { label: "Токены", value: formatTokens(tokens), note: `вход ${formatTokens(totals.input)} · выход ${formatTokens(totals.output)}` },
+    {
+      label: "Кэш",
+      value: `${Math.round(cacheShare * 100)}%`,
+      note: `${formatTokens(totals.cacheRead)} из входа прочитано из кэша`,
+    },
+  ];
+  for (const row of rows) {
+    const card = document.createElement("div");
+    card.className = `statsKpi${row.big ? " isBig" : ""}`;
+    const label = document.createElement("div");
+    label.className = "statsLabel";
+    label.textContent = row.label;
+    const value = document.createElement("div");
+    value.className = "statsValue";
+    value.textContent = row.value;
+    const note = document.createElement("div");
+    note.className = "statsNote";
+    note.textContent = row.note;
+    card.append(label, value, note);
+    column.append(card);
+  }
+  return column;
+}
+
+// --- analytics: daily chart ------------------------------------------------
+
+function buildStatsChartCard(byDay, totals) {
+  const card = document.createElement("div");
+  card.className = "statsPanel";
+  const head = document.createElement("div");
+  head.className = "statsPanelHead";
+  const title = document.createElement("h2");
+  title.textContent = "По дням";
+  const metric = document.createElement("div");
+  metric.className = "statsMetric";
+  for (const [key, label] of [["cost", "Стоимость"], ["tokens", "Токены"]]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `statsMetricBtn${statsMetric === key ? " isOn" : ""}`;
+    button.textContent = label;
+    button.setAttribute("aria-pressed", String(statsMetric === key));
+    button.addEventListener("click", () => {
+      if (statsMetric === key) return;
+      statsMetric = key;
+      buildStatsPane();
+    });
+    metric.append(button);
+  }
+  head.append(title, metric);
+  card.append(head);
+
+  const values = byDay.map((day) => (statsMetric === "cost" ? day.cost : day.input + day.output));
+  const max = Math.max(...values, statsMetric === "cost" ? 0.0001 : 1);
+  const chart = document.createElement("div");
+  chart.className = "statsChart";
+  chart.setAttribute("role", "img");
+  chart.setAttribute("aria-label", statsMetric === "cost"
+    ? `Расходы по дням: максимум ${statsMoney(max)} за день, дней: ${byDay.length}`
+    : `Токены по дням: максимум ${formatTokens(max)} за день, дней: ${byDay.length}`);
+  const today = new Date().toISOString().slice(0, 10);
+  byDay.forEach((day, index) => {
+    const column = document.createElement("div");
+    column.className = "statsBar";
+    column.title = `${statsDayLabel(day.day)} · ${plural(day.calls, ["запрос", "запроса", "запросов"])} · ${statsMoney(day.cost)} · ${formatTokens(day.input + day.output)} токенов`;
+    if (day.day === today) column.classList.add("isToday");
+    const fill = document.createElement("span");
+    fill.style.height = `${Math.max(2, Math.round((values[index] / max) * 100))}%`;
+    column.append(fill);
+    chart.append(column);
+  });
+  card.append(chart);
+
+  const axis = document.createElement("div");
+  axis.className = "statsAxis";
+  const left = document.createElement("span");
+  left.textContent = statsDayLabel(byDay[0]?.day);
+  const mid = document.createElement("span");
+  mid.textContent = `макс. ${statsMetric === "cost" ? statsMoney(max) : formatTokens(max)}`;
+  const right = document.createElement("span");
+  right.textContent = statsDayLabel(byDay[byDay.length - 1]?.day);
+  axis.append(left, mid, right);
+  card.append(axis);
+
+  const foot = document.createElement("div");
+  foot.className = "statsAxis";
+  const totalLabel = document.createElement("span");
+  totalLabel.textContent = `итого ${statsMetric === "cost" ? statsMoney(totals.cost) : formatTokens(totals.input + totals.output)}`;
+  const perDay = document.createElement("span");
+  perDay.textContent = `в среднем за день ${statsMetric === "cost"
+    ? statsMoney(totals.cost / Math.max(1, byDay.length))
+    : formatTokens((totals.input + totals.output) / Math.max(1, byDay.length))}`;
+  foot.append(totalLabel, perDay);
+  card.append(foot);
+  return card;
+}
+
+// --- analytics: models table -----------------------------------------------
+
+const STATS_COLUMNS = [
+  { key: "model", label: "Модель", numeric: false },
+  { key: "calls", label: "Запросы", numeric: true },
+  { key: "tokens", label: "Токены", numeric: true },
+  { key: "cost", label: "Стоимость", numeric: true },
+];
+
+function statsSortValue(row, key) {
+  if (key === "model") return statsModelName(row.model).toLowerCase();
+  if (key === "tokens") return row.input + row.output;
+  return row[key] ?? 0;
+}
+
+function buildStatsModels(byModel) {
+  const card = document.createElement("div");
+  card.className = "statsPanel";
+  const head = document.createElement("div");
+  head.className = "statsPanelHead";
+  const title = document.createElement("h2");
+  title.textContent = "Модели";
+  const meta = document.createElement("span");
+  meta.className = "statsPanelMeta";
+  meta.textContent = plural(byModel.length, ["модель", "модели", "моделей"]);
+  head.append(title, meta);
+  card.append(head);
+
+  const rows = [...byModel].sort((a, b) => {
+    const left = statsSortValue(a, statsSort.key);
+    const right = statsSortValue(b, statsSort.key);
+    if (typeof left === "string" || typeof right === "string") {
+      return String(left).localeCompare(String(right), "ru") * statsSort.dir;
+    }
+    return (left - right) * statsSort.dir;
+  });
+  const maxCost = Math.max(...rows.map((row) => row.cost), 0.0001);
 
   const table = document.createElement("div");
   table.className = "statsTable";
   table.setAttribute("role", "table");
-  table.setAttribute("aria-label", "Расходы по моделям");
-  const head = document.createElement("div");
-  head.className = "statsRow isHead";
-  head.setAttribute("role", "row");
-  head.append(
-    Object.assign(document.createElement("span"), { textContent: "Модель" }),
-    Object.assign(document.createElement("span"), { textContent: "Запросы" }),
-    Object.assign(document.createElement("span"), { textContent: "Токены" }),
-    Object.assign(document.createElement("span"), { textContent: "Стоимость" }),
-  );
-  table.append(head);
-  for (const row of data.byModel) {
+  table.setAttribute("aria-label", "Модели за выбранный период");
+  const headRow = document.createElement("div");
+  headRow.className = "statsRow isHead";
+  headRow.setAttribute("role", "row");
+  for (const column of STATS_COLUMNS) {
+    const active = statsSort.key === column.key;
+    // aria-sort belongs on the column header, the button only carries the action.
+    const cell = document.createElement("div");
+    cell.className = `statsHeadCell${column.numeric ? " isNumeric" : ""}`;
+    cell.setAttribute("role", "columnheader");
+    cell.setAttribute("aria-sort", active ? (statsSort.dir === 1 ? "ascending" : "descending") : "none");
+    if (active) cell.classList.add("isSorted");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "statsSortBtn";
+    button.setAttribute("aria-label", `Сортировать по столбцу «${column.label}»`);
+    const text = document.createElement("span");
+    text.textContent = column.label;
+    const sortIcon = svgIcon("chevron-down", "icon statsSortIcon");
+    if (active) sortIcon.classList.add(statsSort.dir === 1 ? "isAsc" : "isDesc");
+    button.append(text, sortIcon);
+    button.addEventListener("click", () => {
+      if (statsSort.key === column.key) statsSort.dir *= -1;
+      else statsSort = { key: column.key, dir: column.numeric ? -1 : 1 };
+      buildStatsPane();
+    });
+    cell.append(button);
+    headRow.append(cell);
+  }
+  const barHead = document.createElement("span");
+  barHead.className = "statsHeadBar";
+  barHead.setAttribute("aria-hidden", "true");
+  headRow.append(barHead);
+  table.append(headRow);
+
+  for (const row of rows) {
     const line = document.createElement("div");
     line.className = "statsRow";
     line.setAttribute("role", "row");
-    line.append(
-      Object.assign(document.createElement("span"), { textContent: globalThis.grankaModels.modelName(row.model) }),
-      Object.assign(document.createElement("span"), { textContent: String(row.calls) }),
-      Object.assign(document.createElement("span"), { textContent: formatTokens(row.input + row.output) }),
-      Object.assign(document.createElement("span"), { textContent: `$${row.cost.toFixed(4)}` }),
-    );
+    const cell = (content, className) => {
+      const span = document.createElement("span");
+      span.setAttribute("role", "cell");
+      if (className) span.className = className;
+      span.textContent = content;
+      return span;
+    };
+    const model = cell(statsModelName(row.model), "statsModel");
+    model.title = row.model;
+    const calls = cell(String(row.calls));
+    const tokens = cell(formatTokens(row.input + row.output));
+    const cost = cell(statsMoney(row.cost));
+    const bar = document.createElement("span");
+    bar.setAttribute("role", "cell");
+    bar.className = "statsMini";
+    const fill = document.createElement("span");
+    fill.style.width = `${Math.max(2, Math.round((row.cost / maxCost) * 100))}%`;
+    bar.append(fill);
+    line.append(model, calls, tokens, cost, bar);
     table.append(line);
   }
-  pane.append(table);
+  card.append(table);
+  return card;
 }
 
 // --- log rendering ---------------------------------------------------------
@@ -1062,27 +1300,6 @@ function addDivider(text) {
   log.append(line);
 }
 
-function addCheckpointDivider(id) {
-  const line = document.createElement("div");
-  line.className = "divider";
-  const label = document.createElement("span");
-  label.textContent = "чекпоинт перед правками";
-  const button = document.createElement("button");
-  button.className = "dividerAction";
-  button.textContent = "откатить";
-  button.title = "Вернуть файлы к состоянию перед этими правками (новые файлы останутся)";
-  button.addEventListener("click", async () => {
-    const ok = await granka.confirm("Откатить файлы к чекпоинту?", "Файлы вернутся к состоянию перед этими правками. Новые файлы останутся.", "Откатить");
-    if (!ok) return;
-    button.disabled = true;
-    const result = await granka.restoreCheckpoint(id);
-    toast(result.ok ? "Файлы откачены к чекпоинту" : `Не удалось: ${result.error ?? "ошибка"}`, { error: !result.ok });
-    button.disabled = false;
-  });
-  line.append(label, button);
-  log.append(line);
-}
-
 // errors are attached to the turn they belong to, not to a global banner
 function attachError(wrapper, message) {
   const box = document.createElement("div");
@@ -1112,6 +1329,19 @@ function attachError(wrapper, message) {
 function renderAssistant(wrapper, body, text) {
   wrapper.__raw = text;
   body.innerHTML = window.mdToHtml(text);
+}
+
+// A provider that streams reasoning as ordinary text leaves the answer with
+// its own thinking glued to the front. Strip an exact reasoning prefix so the
+// same words are not shown twice; anything else passes through untouched.
+function withoutThinkingEcho(text, thinking) {
+  const answer = String(text ?? "");
+  const source = String(thinking ?? "").trim();
+  if (source.length < 80) return answer;
+  const head = source.slice(0, Math.min(source.length, 200));
+  const trimmed = answer.trimStart();
+  if (!trimmed.startsWith(head)) return answer;
+  return trimmed.slice(source.length).trimStart();
 }
 
 function addUsage(wrapper, usage) {
@@ -1274,7 +1504,11 @@ granka.onDelta((delta) => {
 });
 
 granka.onThinking((delta) => {
-  if (!busy || thinkingMode() === "off") return;
+  if (!busy) return;
+  // Reasoning is always accumulated: the settled answer is checked against it
+  // even when the block itself stays hidden.
+  thinkingText += delta;
+  if (thinkingMode() === "off") return;
   setActivity("think");
   const stick = config.autoScroll === false ? false : stickToBottom();
   currentAssistant();
@@ -1311,8 +1545,11 @@ granka.onThinking((delta) => {
       }
     });
   }
-  thinkingText += delta;
-  thinkingBlock.querySelector(".thinkingBody").textContent = thinkingText;
+  const thinkingBody = thinkingBlock.querySelector(".thinkingBody");
+  thinkingBody.textContent = thinkingText;
+  // Follow the reasoning as it grows: the block has its own scroll area and
+  // max height, so without this the user reads a stale first screen.
+  thinkingBody.scrollTop = thinkingBody.scrollHeight;
   scrollIf(stick);
 });
 
@@ -1327,6 +1564,14 @@ function formatDuration(ms) {
   if (!ms) return "";
   if (ms < 1000) return `${Math.round(ms)} мс`;
   return `${(ms / 1000).toFixed(1).replace(/\.0$/, "")} с`;
+}
+
+// Running counters tick once a second and show whole seconds: a 500ms tick
+// printed 1.5 s → 2.0 s → 2.5 s, which reads as noise next to a finished time.
+function formatElapsed(ms) {
+  if (!ms) return "";
+  if (ms < 1000) return `${Math.round(ms)} мс`;
+  return `${Math.round(ms / 1000)} с`;
 }
 
 function shortPath(filePath) {
@@ -1457,6 +1702,8 @@ function updateGroupHead(group) {
   if (badge) badge.textContent = errors ? `${errors} ош.` : "";
   group.classList.toggle("isCollapsed", chips.length >= 3);
   group.querySelector(".toolGroupHead")?.setAttribute("aria-expanded", String(chips.length < 3));
+  // A growing group may fold itself while a detail is open inside it.
+  if (group.classList.contains("isCollapsed")) closeToolDetails(group);
 }
 
 function toolGroupHead(group) {
@@ -1485,6 +1732,7 @@ function toolGroupHead(group) {
   const toggle = () => {
     group.classList.toggle("isCollapsed");
     head.setAttribute("aria-expanded", String(!group.classList.contains("isCollapsed")));
+    if (group.classList.contains("isCollapsed")) closeToolDetails(group);
   };
   head.addEventListener("click", toggle);
   head.addEventListener("keydown", (event) => {
@@ -1534,6 +1782,7 @@ function ensureToolBlock() {
   const toggle = () => {
     toolBlock.classList.toggle("isOpen");
     toolBlockHead.setAttribute("aria-expanded", String(toolBlock.classList.contains("isOpen")));
+    if (!toolBlock.classList.contains("isOpen")) closeToolDetails(toolBlock);
   };
   toolBlockHead.addEventListener("click", toggle);
   toolBlockHead.addEventListener("keydown", (event) => {
@@ -1568,7 +1817,7 @@ function updateToolBlockHead() {
   if (badge) badge.textContent = errors ? `${errors} ош.` : "";
 }
 
-// Live elapsed timer for running chips (500ms tick, stops when none run).
+// Live elapsed timer for running chips (1s tick, stops when none run).
 let toolElapsedTimer = null;
 function startToolElapsedTicker() {
   if (toolElapsedTimer) return;
@@ -1579,10 +1828,10 @@ function startToolElapsedTicker() {
     for (const chip of running) {
       const startedAt = chip.__detail?.startedAt;
       if (!startedAt) continue;
-      const elapsed = formatDuration(Date.now() - startedAt);
+      const elapsed = formatElapsed(Date.now() - startedAt);
       chip.querySelector(".toolTime").textContent = elapsed ? `· ${elapsed}` : "";
     }
-  }, 500);
+  }, 1000);
 }
 
 function appendToolChip(chip, name) {
@@ -1617,7 +1866,7 @@ granka.onTool((tool) => {
   if (!busy) return;
   const stick = stickToBottom();
   currentAssistant();
-  setActivity(tool.phase === "start" ? "work" : "think", tool.name);
+  setActivity(tool.phase === "start" ? "work" : "think");
   if (tool.phase === "start") {
     // Subagents are always visible, even when other tools are hidden: the
     // user must see who is working on their behalf.
@@ -1754,10 +2003,6 @@ granka.onNotice((notice) => {
     addDivider(notice.output);
     return;
   }
-  if (notice.kind === "checkpoint") {
-    addCheckpointDivider(notice.id);
-    return;
-  }
   if (notice.kind === "subagent") {
     const line = document.createElement("div");
     line.className = "subagentResult";
@@ -1768,16 +2013,6 @@ granka.onNotice((notice) => {
     size.textContent = `${notice.chars} символов`;
     line.append(label, size);
     log.append(line);
-    return;
-  }
-  if (notice.kind === "subtool") {
-    // Live progress inside the running task chip (last one wins).
-    const chips = streamWrapper ? [...streamWrapper.querySelectorAll('.tool[data-name="task"].isRunning')] : [];
-    const chip = chips[chips.length - 1];
-    const status = chip?.querySelector(".toolStatus");
-    if (status) {
-      status.textContent = notice.phase === "start" ? `работает · ${notice.name}…` : `работает · ${notice.name} готово`;
-    }
     return;
   }
   if (notice.kind === "backgroundTask") {
@@ -1915,6 +2150,17 @@ function toolDetailOf(chip) {
   return next?.classList.contains("toolDetail") ? next : null;
 }
 
+// Collapsing a block or a group must not leave an orphan detail behind: the
+// panel lives inside the collapsed list, so it would stay visible as a stray
+// block after everything else is folded away.
+function closeToolDetails(scope) {
+  for (const detail of [...scope.querySelectorAll(".toolDetail")]) detail.remove();
+  for (const chip of [...scope.querySelectorAll(".tool[aria-expanded='true']")]) {
+    chip.setAttribute("aria-expanded", "false");
+    chip.removeAttribute("aria-details");
+  }
+}
+
 function toggleToolDetail(chip) {
   // Close this chip's own detail first: removing siblings before the check
   // also removed its own detail, so a second click re-opened it.
@@ -1927,11 +2173,7 @@ function toggleToolDetail(chip) {
   }
   // One detail per parent.
   const scope = chip.closest(".msg") ?? chip.parentElement;
-  for (const other of [...scope.querySelectorAll(".toolDetail")]) other.remove();
-  for (const other of [...scope.querySelectorAll(".tool[aria-expanded='true']")]) {
-    other.setAttribute("aria-expanded", "false");
-    other.removeAttribute("aria-details");
-  }
+  closeToolDetails(scope);
   const detail = document.createElement("div");
   detail.className = "toolDetail";
   detail.setAttribute("role", "region");
@@ -1970,12 +2212,11 @@ function toggleToolDetail(chip) {
   }
   detail.append(argsSection(args));
   detail.append(detailSection("результат", unwrapResult(result) || "(нет)"));
-  // In history the chips live in a flex column: put the detail after that
-  // column, not between the rows.
+  // The detail always opens right under its own row — inside a list that
+  // means between rows, not after the last chip of the block.
   detail.id = `tool-detail-${++toolDetailSeq}`;
   chip.setAttribute("aria-details", detail.id);
-  const detailHost = chip.parentElement.classList.contains("toolList") ? chip.parentElement : chip;
-  detailHost.after(detail);
+  chip.after(detail);
   chip.setAttribute("aria-expanded", "true");
 }
 
@@ -2681,6 +2922,7 @@ function renderHistoryTurn(message, promptText) {
     const toggle = () => {
       block.classList.toggle("isOpen");
       head.setAttribute("aria-expanded", String(block.classList.contains("isOpen")));
+      if (!block.classList.contains("isOpen")) closeToolDetails(block);
     };
     head.addEventListener("click", toggle);
     head.addEventListener("keydown", (event) => {
@@ -3101,15 +3343,33 @@ async function checkDailyBudget() {
 
 async function send() {
   const question = $("prompt").value.trim();
-  if (!question) return;
+  // Attachments alone are a valid message: a long paste or a dropped file
+  // often is the whole point of the turn.
+  const outgoing = attachments.map((item) => ({
+    path: item.path,
+    name: item.name,
+    kind: item.kind,
+    bytes: item.bytes,
+    dataUrl: item.dataUrl ?? "",
+  }));
+  if (!question && !outgoing.length) return;
   if (view !== "chat") setView("chat");
   if (busy) {
-    const result = await granka.queue(question, "followUp");
+    // The queue carries text only: name the files so they are not lost.
+    const queuedText = outgoing.length
+      ? `${question}${question ? "\n\n" : ""}[вложения]\n${outgoing.map((item) => `- ${item.path}`).join("\n")}`
+      : question;
+    const result = await granka.queue(queuedText, "followUp");
     if (!result.ok) return fail(result.error ?? "Очередь недоступна. Дождитесь ответа и отправьте снова");
-    addMessage("user", question);
+    const queuedMessage = addMessage("user", question);
+    appendBubbleAttachments(queuedMessage.wrapper, outgoing.map((item) => ({ name: item.name, path: item.path })));
     $("prompt").value = "";
     autoGrow();
     $("suggest").hidden = true;
+    if (outgoing.length) {
+      attachments = [];
+      renderAttachments();
+    }
     return;
   }
   streamText = "";
@@ -3122,7 +3382,13 @@ async function send() {
   syncQueueBadge();
   log.querySelector(".emptyState")?.remove();
   const userMessage = addMessage("user", question);
-  appendBubbleAttachments(userMessage.wrapper, attachments.map((item) => ({ name: item.name, path: item.path })));
+  appendBubbleAttachments(userMessage.wrapper, outgoing.map((item) => ({ name: item.name, path: item.path })));
+  // The chips belong to the sent message now, not to the composer: leaving
+  // them in the input made every turn look like the files were still queued.
+  if (outgoing.length) {
+    attachments = [];
+    renderAttachments();
+  }
   streamPrompt = question;
   log.scrollTop = log.scrollHeight;
   $("prompt").value = "";
@@ -3132,25 +3398,14 @@ async function send() {
   setActivity("think");
   renderActivity();
   try {
-    const sent = attachments.map((item) => ({
-      path: item.path,
-      name: item.name,
-      kind: item.kind,
-      bytes: item.bytes,
-      dataUrl: item.dataUrl ?? "",
-    }));
-  const result = await granka.ask(question, sent);
-  if (sent.length) {
-    attachments = [];
-    renderAttachments();
-  }
+  const result = await granka.ask(question, outgoing);
   try { localStorage.removeItem(draftKey()); } catch {}
   try { localStorage.removeItem(`${DRAFT_PREFIX}new`); } catch {}
     if (!result.ok) {
       // Interrupted/failed turn: keep whatever the model already said (the
       // agent returns it in result.text) and finalize it as markdown —
       // otherwise the raw <pre> stream and the error box are all that stays.
-      const partial = result.text || streamText;
+      const partial = withoutThinkingEcho(result.text || streamText, thinkingText);
       let target;
       if (streamWrapper && streamBody) {
         streamBody.classList.remove("isStreaming");
@@ -3170,13 +3425,14 @@ async function send() {
       attachError(target, aborted ? "Ответ прерван" : result.error);
       setStatus("");
     } else {
+      const answer = withoutThinkingEcho(result.text || streamText, thinkingText);
       if (!streamWrapper) {
-        const created = addMessage("assistant", result.text);
+        const created = addMessage("assistant", answer);
         created.wrapper.__prompt = streamPrompt;
         addUsage(created.wrapper, result.usage);
       } else {
         streamBody.classList.remove("isStreaming");
-        renderAssistant(streamWrapper, streamBody, result.text || streamText);
+        renderAssistant(streamWrapper, streamBody, answer);
         decorateCodeBlocks(streamBody);
         addUsage(streamWrapper, result.usage);
       }

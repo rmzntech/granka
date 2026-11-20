@@ -65,6 +65,44 @@ function mdToHtml(source) {
     .replace(/!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer" class="extImg">внешнее изображение: $1</a>')
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 
+  // One list item or none: indent, bullet (or number), text.
+  const LIST_ITEM = /^(\s*)([-*]|\d+\.)\s+(.*)$/;
+
+  // `<li>` stays open: a nested list has to live inside its parent item.
+  const listItemHtml = (text) => {
+    const task = /^\[( |x|X)\]\s+/.exec(text);
+    if (!task) return `<li>${text}`;
+    const done = task[1].toLowerCase() === "x";
+    return `<li class="taskItem"><input type="checkbox" disabled${done ? " checked" : ""} /> ${text.slice(task[0].length)}`;
+  };
+
+  // A list can start mid-block (text, then bullets without a blank line) and
+  // can mix bullets with numbers. Nested levels follow the indent, and an
+  // ordered run next to an unordered one becomes a separate list instead of
+  // silently turning numbers into bullets.
+  const renderList = (items) => {
+    let html = "";
+    const stack = []; // open lists: { indent, ordered }
+    const close = () => {
+      const open = stack.pop();
+      html += `</li></${open.ordered ? "ol" : "ul"}>`;
+    };
+    const closeItem = () => { html += "</li>"; };
+    for (const item of items) {
+      while (stack.length && item.indent < stack[stack.length - 1].indent) close();
+      while (stack.length && item.indent === stack[stack.length - 1].indent && item.ordered !== stack[stack.length - 1].ordered) close();
+      if (!stack.length || item.indent > stack[stack.length - 1].indent) {
+        html += `<${item.ordered ? "ol" : "ul"}>`;
+        stack.push({ indent: item.indent, ordered: item.ordered });
+      } else {
+        closeItem();
+      }
+      html += listItemHtml(item.text);
+    }
+    while (stack.length) close();
+    return html;
+  };
+
   const isTableRow = (line) => /^\s*\|?.+\|.*$/.test(line) && line.includes("|");
   const isTableSeparator = (line) =>
     /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(line) && line.includes("-");
@@ -146,29 +184,37 @@ function mdToHtml(source) {
       blocks.push("<hr>");
       continue;
     }
-    if (lines.every((line) => /^\s*([-*]|\d+\.)\s+/.test(line))) {
-      const tag = /^\s*\d+\./.test(lines[0]) ? "ol" : "ul";
-      let level = 0;
-      let html = `<${tag}>`;
-      for (const line of lines) {
-        const indent = (line.match(/^\s*/)[0].length / 2) | 0;
-        while (level < indent) { html += `<${tag}>`; level++; }
-        while (level > indent) { html += `</${tag}>`; level--; }
-        const clean = line.replace(/^\s*([-*]|\d+\.)\s+/, "");
-        const task = /^\[( |x|X)\]\s+/.exec(clean);
-        if (task) {
-          const done = task[1].toLowerCase() === "x";
-          html += `<li class="taskItem"><input type="checkbox" disabled${done ? " checked" : ""} /> ${clean.slice(task[0].length)}</li>`;
-        } else {
-          html += `<li>${clean}</li>`;
-        }
+    // Paragraphs and lists may share a block: walk the lines in order.
+    const out = [];
+    let paragraph = [];
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      out.push(`<p>${paragraph.join("<br>")}</p>`);
+      paragraph = [];
+    };
+    for (let index = 0; index < lines.length; ) {
+      const start = LIST_ITEM.exec(lines[index]);
+      if (!start) {
+        paragraph.push(lines[index]);
+        index += 1;
+        continue;
       }
-      while (level > 0) { html += `</${tag}>`; level--; }
-      html += `</${tag}>`;
-      blocks.push(html);
-      continue;
+      flushParagraph();
+      const baseIndent = start[1].length;
+      const items = [];
+      while (index < lines.length) {
+        const match = LIST_ITEM.exec(lines[index]);
+        if (!match) break;
+        const indent = match[1].length;
+        // A shallower item than the list start belongs to the next block.
+        if (indent < baseIndent) break;
+        items.push({ indent, ordered: /^\d+\.$/.test(match[2]), text: match[3] });
+        index += 1;
+      }
+      out.push(renderList(items));
     }
-    blocks.push(`<p>${lines.join("<br>")}</p>`);
+    flushParagraph();
+    blocks.push(...out);
   }
 
   return blocks.join("").replace(/\u0000(\d+)\u0000/g, (_m, index) => stash[Number(index)]);

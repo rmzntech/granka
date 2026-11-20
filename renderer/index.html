@@ -165,13 +165,15 @@
             <div class="bgPanelItems" id="bgPanelItems"></div>
           </div>
           <div id="attachments" hidden></div>
+          <div class="activityRow">
+            <span id="status" class="statusText" role="status"></span>
+          </div>
           <div class="composerBox">
             <button class="iconBtn attachBtn" id="attachBtn" title="Добавить файл" aria-label="Добавить файл">
               <svg class="icon"><use href="#i-paperclip" /></svg>
             </button>
             <textarea id="prompt" rows="1" placeholder="Сообщение…" aria-label="Сообщение"></textarea>
             <div class="composerActions">
-              <span id="status" class="statusText" role="status"></span>
               <button class="iconBtn" id="stop" title="Остановить (Esc)" aria-label="Остановить" hidden>
                 <svg class="icon"><use href="#i-square" /></svg>
               </button>

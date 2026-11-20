@@ -1,12 +1,27 @@
 // Shared theme/font application for the main and settings windows.
 // Loaded after themes.js, before app.js/settings.js. Both windows keep a
 // thin applyTheme() wrapper that passes their own media query + config.
+// Bundled faces (renderer/fonts, OFL) plus explicit system stacks. Themes
+// ship one UI face each, so "из темы" and "Inter" used to be the same thing;
+// the stacks below let the typeface be chosen independently of the palette.
 const FONT_STACKS = {
-  // Only bundled fonts: the app must render identically with no system
-  // fonts installed. Granka Inter ships in renderer/fonts (OFL).
   system: '"Granka Inter", sans-serif',
   inter: '"Granka Inter", sans-serif',
+  "system-sans": 'system-ui, -apple-system, "Segoe UI", Roboto, Cantarell, "DejaVu Sans", sans-serif',
+  "system-serif": 'Georgia, "Times New Roman", "DejaVu Serif", serif',
+  "system-mono": 'ui-monospace, "SF Mono", Consolas, "DejaVu Sans Mono", monospace',
+  mono: '"Granka Mono", monospace',
 };
+// Shared with the settings window: one list, one source of truth.
+const FONT_CHOICES = [
+  { value: "theme", label: "Из темы" },
+  { value: "inter", label: "Inter (в комплекте)" },
+  { value: "mono", label: "JetBrains Mono (в комплекте)" },
+  { value: "system-sans", label: "Системный — без засечек" },
+  { value: "system-serif", label: "Системный — с засечками" },
+  { value: "system-mono", label: "Системный — моноширинный" },
+];
+globalThis.grankaFonts = { FONT_CHOICES, FONT_STACKS };
 const MONO_STACKS = {
   system: '"Granka Mono", monospace',
   jetbrains: '"Granka Mono", monospace',

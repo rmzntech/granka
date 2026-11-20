@@ -9,7 +9,7 @@ import { syncSystemPrompt } from "./prompt-template.mjs";
 import { createGrankaTools, drainBackgroundResults, listBackgroundTasks as listTasksImpl, cancelBackgroundTask as cancelTaskImpl } from "./tools.mjs";
 import { createDocTools, assertNotSensitive } from "./docs.mjs";
 import { writeFileAtomic } from "./atomic-write.mjs";
-import { MODEL_LEVELS, acceptsText, textOf, usageOf } from "./agent-utils.mjs";
+import { MODEL_LEVELS, acceptsText, stripThinkingEcho, textOf, usageOf } from "./agent-utils.mjs";
 
 export { acceptsText };
 
@@ -1477,6 +1477,7 @@ export async function history() {
         if (block.id) toolIndex.set(block.id, entry);
       }
     }
+    current.text = stripThinkingEcho(current.text, current.thinking);
   }
   flush();
   // The plan is restored from the last todo_write call in the transcript,
@@ -1664,24 +1665,17 @@ function rotateStats() {
   fs.writeFileSync(STATS_FILE, lines.slice(-STATS_KEEP_ROWS).join("\n") + "\n");
 }
 
-let statsCache = null;
+// Parsed stats rows are cached by file state: the aggregation below depends
+// on the requested period and project, so only the parsing is worth caching.
+let statsRowsCache = null;
 
-export function stats() {
+function statsRows() {
   try {
     const stat = fs.statSync(STATS_FILE);
-    if (statsCache && statsCache.mtimeMs === stat.mtimeMs && statsCache.size === stat.size) {
-      return statsCache.result;
+    if (statsRowsCache && statsRowsCache.mtimeMs === stat.mtimeMs && statsRowsCache.size === stat.size) {
+      return statsRowsCache.rows;
     }
   } catch (err) { console.error("[granka]", err?.message ?? err); }
-  const result = computeStats();
-  try {
-    const stat = fs.statSync(STATS_FILE);
-    statsCache = { mtimeMs: stat.mtimeMs, size: stat.size, result };
-  } catch (err) { console.error("[granka]", err?.message ?? err); }
-  return result;
-}
-
-function computeStats() {
   const rows = [];
   try {
     for (const line of fs.readFileSync(STATS_FILE, "utf8").split("\n")) {
@@ -1691,16 +1685,51 @@ function computeStats() {
       } catch (err) { console.error("[granka]", err?.message ?? err); }
     }
   } catch (err) { console.error("[granka]", err?.message ?? err); }
+  try {
+    const stat = fs.statSync(STATS_FILE);
+    statsRowsCache = { mtimeMs: stat.mtimeMs, size: stat.size, rows };
+  } catch (err) { console.error("[granka]", err?.message ?? err); }
+  return rows;
+}
+
+// The analytics pane asks for one slice at a time: a period (days, 0 = all)
+// and optionally one project. Totals, models and days must all describe the
+// same slice, otherwise the KPI column would not add up to the chart.
+const STATS_MAX_DAYS = 180;
+
+export function stats({ days = 0, project = "" } = {}) {
+  const rows = statsRows();
+  const projectMap = readProjectMap();
+  const projectNames = new Map((loadConfig().projects ?? []).map((p) => [p.id, p.name]));
+  const projectOf = (sessionId) => projectNameOf(sessionId, projectMap, projectNames);
+  const period = Math.max(0, Math.min(3650, Number(days) || 0));
+  const cutoff = period ? new Date(Date.now() - (period - 1) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) : "";
 
   const totals = { calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, cost: 0, billedCalls: 0 };
   const byModel = new Map();
   const byDay = new Map();
-  const bySession = new Map();
   const byProject = new Map();
-  const projectMap = readProjectMap();
-  const projectNames = new Map((loadConfig().projects ?? []).map((p) => [p.id, p.name]));
+  let firstDay = "";
+  let lastDay = "";
+
   for (const row of rows) {
+    const name = projectOf(row.sessionId);
+    // All-time per-project rows feed the filter itself, so they ignore it.
+    const projectRow = byProject.get(name) ?? { project: name, calls: 0, cost: 0, input: 0, output: 0 };
     const inputTotal = (row.input ?? 0) + (row.cacheRead ?? 0) + (row.cacheWrite ?? 0);
+    projectRow.calls += 1;
+    projectRow.cost += row.cost ?? 0;
+    projectRow.input += inputTotal;
+    projectRow.output += row.output ?? 0;
+    byProject.set(name, projectRow);
+
+    const day = (row.ts ?? "").slice(0, 10);
+    if (cutoff && day < cutoff) continue;
+    if (project && name !== project) continue;
+    if (day) {
+      if (!firstDay || day < firstDay) firstDay = day;
+      if (!lastDay || day > lastDay) lastDay = day;
+    }
     totals.calls += 1;
     totals.input += inputTotal;
     totals.cacheRead += row.cacheRead ?? 0;
@@ -1715,33 +1744,20 @@ function computeStats() {
     modelRow.output += row.output ?? 0;
     modelRow.cost += row.cost ?? 0;
     byModel.set(model, modelRow);
-    const day = (row.ts ?? "").slice(0, 10);
     const dayRow = byDay.get(day) ?? { day, calls: 0, cost: 0, input: 0, output: 0 };
     dayRow.calls += 1;
     dayRow.cost += row.cost ?? 0;
     dayRow.input += inputTotal;
     dayRow.output += row.output ?? 0;
     byDay.set(day, dayRow);
-    const sessionRow = bySession.get(row.sessionId) ?? { sessionId: row.sessionId, calls: 0, cost: 0 };
-    sessionRow.calls += 1;
-    sessionRow.cost += row.cost ?? 0;
-    bySession.set(row.sessionId, sessionRow);
-    // Per-project spend: session → project via session-projects.json.
-    const projectName = projectNameOf(row.sessionId, projectMap, projectNames);
-    const projRow = byProject.get(projectName) ?? { project: projectName, calls: 0, cost: 0, input: 0, output: 0 };
-    projRow.calls += 1;
-    projRow.cost += row.cost ?? 0;
-    projRow.input += inputTotal;
-    projRow.output += row.output ?? 0;
-    byProject.set(projectName, projRow);
   }
 
   return {
     totals,
     byModel: [...byModel.values()].sort((a, b) => b.cost - a.cost),
-    byDay: [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)).slice(-14),
-    bySession: [...bySession.values()].sort((a, b) => b.cost - a.cost).slice(0, 20),
-    byProject: [...byProject.values()].sort((a, b) => b.cost - a.cost).slice(0, 10),
+    byDay: [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)).slice(-STATS_MAX_DAYS),
+    byProject: [...byProject.values()].sort((a, b) => b.cost - a.cost),
+    range: { days: period, project, firstDay, lastDay, hasHistory: rows.length > 0 },
   };
 }
 
@@ -1756,7 +1772,7 @@ function projectNameOf(sessionId, projectMap, projectNames) {
 // Folders are expanded recursively (heavy dirs skipped), identical content is
 // deduplicated by hash, old copies are pruned, and large copies report
 // progress through onProgress.
-const ATTACH_SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", ".venv", "__pycache__", ".next", "checkpoints"]);
+const ATTACH_SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", ".venv", "__pycache__", ".next"]);
 const ATTACH_MAX_FILES = 100;
 const ATTACH_MAX_AGE_DAYS = 30;
 const ATTACH_MAX_TOTAL_BYTES = 500 * 1024 * 1024;
@@ -1992,57 +2008,6 @@ export async function saveAttachmentImage({ name, dataUrl }) {
   }
 }
 
-// Checkpoints: before the first write/edit of a turn, snapshot the working
-// folder (minus heavy dirs) so the user can roll back from the chat.
-const CHECKPOINT_DIR = path.join(AGENT_DIR, "checkpoints");
-const CHECKPOINT_SKIP = new Set([".git", "node_modules", "dist", "build", ".venv", "__pycache__", ".next"]);
-
-function checkpointFilter(src) {
-  return !CHECKPOINT_SKIP.has(path.basename(src));
-}
-
-export function createCheckpoint(cwd) {
-  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  const dest = path.join(CHECKPOINT_DIR, id);
-  fs.mkdirSync(CHECKPOINT_DIR, { recursive: true });
-  fs.cpSync(cwd, dest, { recursive: true, filter: checkpointFilter });
-  pruneCheckpoints();
-  return id;
-}
-
-function pruneCheckpoints() {
-  try {
-    const entries = fs.readdirSync(CHECKPOINT_DIR)
-      .map((name) => ({ name, mtime: fs.statSync(path.join(CHECKPOINT_DIR, name)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-    for (const entry of entries.slice(20)) {
-      fs.rmSync(path.join(CHECKPOINT_DIR, entry.name), { recursive: true, force: true });
-    }
-  } catch (err) { console.error("[granka] prune checkpoints:", err?.message ?? err); }
-}
-
-export function restoreCheckpoint(id) {
-  const src = path.join(CHECKPOINT_DIR, String(id ?? ""));
-  if (!insideCheckpointDir(src) || !fs.existsSync(src)) {
-    return { ok: false, error: "чекпоинт не найден" };
-  }
-  const cwd = session?.sessionManager.getCwd() ?? loadConfig().cwd ?? AGENT_DIR;
-  fs.cpSync(src, cwd, { recursive: true, force: true, filter: checkpointFilter });
-  return { ok: true };
-}
-
-function insideCheckpointDir(target) {
-  const rel = path.relative(path.resolve(CHECKPOINT_DIR), path.resolve(target));
-  return Boolean(rel) && !rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel);
-}
-
-async function maybeCheckpoint(toolName, session, state) {
-  if (state.done || !["edit", "write", "doc_edit", "doc_create"].includes(toolName)) return "";
-  state.done = true;
-  const cwd = session.sessionManager.getCwd();
-  return createCheckpoint(cwd);
-}
-
 // User hook (settings): a shell command run in the project folder after
 // every file edit, e.g. a formatter. Trusted: it comes from the user's own
 // config, never from model output.
@@ -2077,7 +2042,6 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
       .join("\n\n")}`;
   }
   const s = await ensureSession();
-  const checkpointState = { done: false };
   let thinkingFirstAt = 0;
   let thinkingLastAt = 0;
   const unsubscribe = s.subscribe((event) => {
@@ -2092,9 +2056,6 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
       }
     } else if (event.type === "tool_execution_start") {
       onTool({ phase: "start", name: event.toolName, args: clip(event.args), toolCallId: event.toolCallId });
-      maybeCheckpoint(event.toolName, s, checkpointState).then((id) => {
-        if (id) onNotify({ kind: "checkpoint", id });
-      }).catch((err) => console.error("[granka] checkpoint:", err?.message ?? err));
     } else if (event.type === "tool_execution_end") {
       onTool({
         phase: "end",
@@ -2139,12 +2100,17 @@ export async function ask(question, onDelta, onTool, onNotify = () => {}, attach
         .map((item) => `- ${item.path} (${path.extname(item.name).slice(1) || "файл"}, ${item.bytes} B)`)
         .join("\n")}`
     : "";
+  // Attachments can be the whole message (a long paste becomes a file, a
+  // dropped document needs no caption): never prompt with an empty string.
+  const promptText = [String(question ?? "").trim(), attachmentNote.trim()]
+    .filter(Boolean)
+    .join("\n\n") || "Опиши вложение.";
   const startIndex = s.messages.length;
   try {
     // One prompt with tool calls produces many assistant turns, each with its
     // own usage. Summing them all is the only honest per-turn total — the
     // last message alone undercounts spend by most of the turn.
-    await s.prompt(question + attachmentNote, images.length ? { images } : undefined);
+    await s.prompt(promptText, images.length ? { images } : undefined);
     const fresh = s.messages.slice(startIndex);
     const usage = sumTurnUsage(fresh);
     recordUsage(s.sessionManager.getSessionId(), s.model?.id ?? loadConfig().model, usage);
@@ -2191,6 +2157,8 @@ export async function abort() {
 }
 
 // --- backup: export/import ~/.granka as a .zip -----------------------------
+// "checkpoints" is only a leftover folder from older versions: still skipped
+// so an existing one never lands in an exported backup.
 const BACKUP_SKIP_DIRS = new Set(["logs", "checkpoints", ".git"]);
 const BACKUP_SKIP_FILES = new Set(["auth.json"]);
 

@@ -290,11 +290,9 @@ $("pickDir").addEventListener("click", async () => {
 function buildFontDropdowns() {
   const ui = window.grankaSelect.create({
     ariaLabel: "Шрифт интерфейса",
-    // Only bundled fonts are offered: granka must not depend on system fonts.
-    options: [
-      { value: "theme", label: "Из темы" },
-      { value: "inter", label: "Inter (в комплекте)" },
-    ],
+    // The typeface is independent of the theme: any stack can be paired with
+    // any palette (see grankaFonts in theme-apply.js).
+    options: globalThis.grankaFonts?.FONT_CHOICES ?? [{ value: "theme", label: "Из темы" }],
     value: config.uiFont ?? "theme",
     onChange: async (value) => {
       config.uiFont = value;

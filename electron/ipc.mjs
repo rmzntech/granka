@@ -236,7 +236,7 @@ export function registerIpc({ openSettings } = {}) {
   ipcMain.handle("doc:preview", (_e, filePath) => agent.docPreview(filePath));
   ipcMain.handle("attach:image", (_e, payload) => agent.saveAttachmentImage(payload));
   ipcMain.handle("attach:text", (_e, payload) => agent.attachText(payload));
-  ipcMain.handle("stats:get", () => agent.stats());
+  ipcMain.handle("stats:get", (_e, options) => agent.stats(options ?? {}));
   ipcMain.handle("app:paths", () => agent.appPaths());
   ipcMain.handle("backup:export", async (e) => {
     const win = winOf(e);
@@ -315,7 +315,6 @@ export function registerIpc({ openSettings } = {}) {
     return { ok: true };
   });
   ipcMain.handle("chat:compact", () => agent.compactNow());
-  ipcMain.handle("checkpoint:restore", (_e, id) => agent.restoreCheckpoint(id));
   ipcMain.handle("chat:compactCancel", () => agent.cancelCompaction());
   ipcMain.handle("chat:lastPrompt", () => agent.lastUserPrompt());
   ipcMain.handle("app:version", () => app.getVersion());

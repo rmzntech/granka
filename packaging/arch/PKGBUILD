@@ -1,7 +1,7 @@
 # Maintainer: granka
 pkgname=granka
 pkgver=1.14.1
-pkgrel=3
+pkgrel=4
 pkgdesc="Desktop client for the Pi coding agent"
 arch=('x86_64' 'aarch64')
 url="https://github.com/granka"

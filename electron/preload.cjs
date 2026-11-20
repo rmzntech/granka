@@ -56,7 +56,7 @@ contextBridge.exposeInMainWorld("granka", {
       return "";
     }
   },
-  getStats: () => ipcRenderer.invoke("stats:get"),
+  getStats: (options) => ipcRenderer.invoke("stats:get", options),
   exportBackup: () => ipcRenderer.invoke("backup:export"),
   importBackup: () => ipcRenderer.invoke("backup:import"),
   paths: () => ipcRenderer.invoke("app:paths"),
@@ -69,7 +69,6 @@ contextBridge.exposeInMainWorld("granka", {
   ask: (question, attachments) => ipcRenderer.invoke("chat:ask", question, attachments),
   queue: (text, mode) => ipcRenderer.invoke("chat:queue", text, mode),
   compact: () => ipcRenderer.invoke("chat:compact"),
-  restoreCheckpoint: (id) => ipcRenderer.invoke("checkpoint:restore", id),
   abort: () => ipcRenderer.invoke("chat:abort"),
   pickDir: () => ipcRenderer.invoke("dialog:pickDir"),
   pickFiles: () => ipcRenderer.invoke("dialog:pickFiles"),

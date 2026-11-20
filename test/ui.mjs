@@ -157,6 +157,106 @@ app.whenReady().then(async () => {
     return { openedInline, closedInline, openedList, closedList };
   })()`);
 
+  // Tool rows: one row per call, the detail opens under its own row, folding
+  // the block takes the detail with it, and the error outline stays on the
+  // failing row instead of painting the whole summary red.
+  const toolRows = await win.webContents.executeJavaScript(`(() => {
+    const make = (id) => {
+      const chip = makeToolChip("bash", JSON.stringify({ command: "ls" }), id);
+      chip.__detail.result = "ok";
+      return chip;
+    };
+    const msg = document.createElement("div");
+    msg.className = "msg assistant";
+    const block = document.createElement("div");
+    block.className = "toolBlock isOpen";
+    const head = document.createElement("div");
+    head.className = "toolBlockHead";
+    const list = document.createElement("div");
+    list.className = "toolList";
+    block.append(head, list);
+    const inline = make("inline");
+    const first = make("first");
+    const second = make("second");
+    msg.append(block, inline);
+    list.append(first, second);
+    document.getElementById("log").append(msg);
+
+    toggleToolDetail(first);
+    const underOwnRow = first.nextElementSibling?.classList.contains("toolDetail") === true;
+    closeToolDetails(block);
+    const closedOnCollapse = !block.querySelector(".toolDetail") && first.getAttribute("aria-expanded") === "false";
+
+    const normalHead = document.createElement("div");
+    normalHead.className = "toolBlockHead";
+    const errHead = document.createElement("div");
+    errHead.className = "toolBlockHead hasError";
+    const errChip = make("err");
+    errChip.classList.add("error");
+    msg.append(normalHead, errHead, errChip);
+    const normalBorder = getComputedStyle(normalHead).borderTopColor;
+    const headBorder = getComputedStyle(errHead).borderTopColor;
+    const chipBorder = getComputedStyle(errChip).borderTopColor;
+
+    const sameWidth = Math.abs(inline.offsetWidth - first.offsetWidth) <= 1;
+    msg.remove();
+    return {
+      underOwnRow,
+      closedOnCollapse,
+      headNotRed: headBorder === normalBorder,
+      chipRed: chipBorder !== normalBorder,
+      sameWidth,
+    };
+  })()`);
+
+  // Analytics: KPI column, one daily chart with period switch, one models
+  // table. Header and body cells must share the same grid, otherwise the
+  // columns drift apart.
+  const statsPane = await win.webContents.executeJavaScript(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    setView("stats");
+    await wait(1500);
+    const pane = document.getElementById("statsPane");
+    const rows = () => pane.querySelectorAll(".statsRow:not(.isHead)").length;
+    if (!rows()) {
+      const empty = pane.querySelector(".hint")?.textContent ?? "";
+      setView("chat");
+      await wait(300);
+      return { skipped: true, empty };
+    }
+    const kpis = pane.querySelectorAll(".statsKpi").length;
+    const bars7 = pane.querySelectorAll(".statsBar").length;
+    const bodyCols = getComputedStyle(pane.querySelector(".statsRow:not(.isHead)")).gridTemplateColumns;
+    const headCols = getComputedStyle(pane.querySelector(".statsRow.isHead")).gridTemplateColumns;
+    // Two columns share one row height; stacked (narrow window) they do not.
+    const layout = pane.querySelector(".statsLayout");
+    const twoColumn = getComputedStyle(layout).gridTemplateColumns.split(" ").length === 2;
+    const kpiHeight = pane.querySelector(".statsKpis").getBoundingClientRect().height;
+    const chartHeight = pane.querySelector(".statsLayout > .statsPanel").getBoundingClientRect().height;
+    [...pane.querySelectorAll(".segment")].find((b) => b.textContent === "30 дней")?.click();
+    await wait(1200);
+    const bars30 = pane.querySelectorAll(".statsBar").length;
+    const meta30 = document.getElementById("statsMeta").textContent;
+    pane.querySelectorAll(".statsSortBtn")[3]?.click();
+    await wait(1200);
+    const sorted = pane.querySelectorAll(".statsHeadCell")[3]?.getAttribute("aria-sort") === "ascending";
+    // Model names are allowed to ellipsize; header labels are not.
+    const noOverflow = [...pane.querySelectorAll(".statsHeadCell")].every((el) => el.scrollWidth <= el.clientWidth + 1);
+    setView("chat");
+    await wait(300);
+    return {
+      skipped: false,
+      kpis,
+      bars7,
+      bars30,
+      aligned: bodyCols === headCols,
+      level: !twoColumn || Math.abs(kpiHeight - chartHeight) <= 2,
+      sorted,
+      noOverflow,
+      meta30,
+    };
+  })()`);
+
   // sidebar toggle works and is restored afterwards
   const sidebarAfterToggle = await win.webContents.executeJavaScript(`(() => {
     document.getElementById("sidebarToggle").click();
@@ -174,7 +274,8 @@ app.whenReady().then(async () => {
       `projectRules=${projectPane.projectRules} ` +
       `sidebarHidden=${sidebarAfterToggle} active=${highlight.skipped ? "n/a" : highlight.activeId === highlight.current} ` +
       `binding=${binding.rows}/${binding.foreign} menu=${menu.skipped ? "n/a" : menu.items.length} ` +
-      `toolToggle=${Object.values(toolToggle).every(Boolean)} errors=${errors.length}`,
+      `toolToggle=${Object.values(toolToggle).every(Boolean)} toolRows=${Object.values(toolRows).every(Boolean)} ` +
+      `stats=${statsPane.skipped ? "n/a" : `${statsPane.kpis}/${statsPane.bars7}/${statsPane.bars30}/${statsPane.aligned}/${statsPane.sorted}`} errors=${errors.length}`,
   );
 
   const ok =
@@ -209,6 +310,19 @@ app.whenReady().then(async () => {
     toolToggle.closedInline &&
     toolToggle.openedList &&
     toolToggle.closedList &&
+    toolRows.underOwnRow &&
+    toolRows.closedOnCollapse &&
+    toolRows.headNotRed &&
+    toolRows.chipRed &&
+    toolRows.sameWidth &&
+    (statsPane.skipped ||
+      (statsPane.kpis === 4 &&
+        statsPane.bars7 >= 7 &&
+        statsPane.bars30 >= 30 &&
+        statsPane.aligned &&
+        statsPane.level &&
+        statsPane.sorted &&
+        statsPane.noOverflow)) &&
     errors.length === 0;
   if (!ok) {
     console.error("ui smoke failed", {
@@ -226,6 +340,8 @@ app.whenReady().then(async () => {
       sidebarAfterToggle,
       highlight,
       toolToggle,
+      toolRows,
+      statsPane,
       errors,
     });
   }
